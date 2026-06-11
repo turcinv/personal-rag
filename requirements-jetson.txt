@@ -13,8 +13,9 @@ sentence-transformers==3.3.1
 python-frontmatter==1.3.0
 PyYAML==6.0.3
 pypdf==6.12.2
+PyMuPDF>=1.24
 cryptography>=3.1
-numpy==2.2.6   # Python 3.10 ceiling — numpy 2.3+ requires 3.11 (x86 lockfile uses 2.4.6 on 3.12)
+numpy==2.2.6   # Python 3.10 ceiling — numpy 2.3+ requires 3.11
 
 # These are pulled in by the above or needed for shared utilities
 posthog==7.17.0

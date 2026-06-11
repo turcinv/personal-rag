@@ -58,3 +58,26 @@ pdf_sources:
 # Override with RAG_JSON_PATH (set automatically in Docker).
 json_sources:
   - path: '~/Documents/knowledge-base-index/indexed'
+
+# ── Extractor pipeline paths ──────────────────────────────────────────────────
+# Used by the rag-extract / rag-enrich / rag-build-* CLI tools.
+# Override individual paths with the matching env vars (RAG_BOOKS_PATH, etc.)
+# when running in Docker — the Makefile extractor targets do this automatically.
+extractor:
+  # Source document directories (Books and Resources are the two input groups).
+  books_path: '/Users/turcinv/Library/CloudStorage/GoogleDrive-turcinv@btlnet.com/My Drive/mindmap/Books'
+  resources_path: '/Users/turcinv/Library/CloudStorage/GoogleDrive-turcinv@btlnet.com/My Drive/mindmap/Resources'
+
+  # Catalog inventory files (read-only canonical inputs).
+  catalog_path: '/Users/turcinv/Documents/personal_knowledge/Career Knowledge Base/Resources/_catalog'
+
+  # Where extraction pipeline writes its heavy outputs (text JSONs, indexed
+  # JSONs, SQLite DB). NOT committed to git — lives outside the vault.
+  output_path: '~/Documents/knowledge-base-index'
+
+  # Where build_obsidian_notes.py writes the per-resource Markdown stubs.
+  obsidian_notes_path: '/Users/turcinv/Documents/personal_knowledge/Career Knowledge Base/Resources/Generated/Resource Notes'
+
+  # Folder holding existing Topic MOC / Learning Path notes (for link_mocs.py
+  # and build_obsidian_notes.py MOC resolution).
+  mocs_path: '/Users/turcinv/Documents/personal_knowledge/Career Knowledge Base/Resources/Generated'

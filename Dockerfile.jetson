@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certifi
     && rm cudss-local-tegra-repo-ubuntu2204-0.7.1_0.7.1-1_arm64.deb \
     && apt-get update && apt-get install -y --no-install-recommends \
         python3.10 python3.10-dev python3-pip gcc libopenblas-dev \
-        cudss \
+        cudss tesseract-ocr \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3.10 /usr/local/bin/python \
     && ln -sf /usr/bin/pip3 /usr/local/bin/pip

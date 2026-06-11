@@ -21,11 +21,16 @@ services:
     volumes:
       - chroma:/data/chroma
       - hf-cache:/data/hf-cache
-      - ./logs:/data/logs                      # app logs, readable on the host
+      - ./logs:/data/logs                          # app logs, readable on the host
       - ${RAG_VAULT_PATH:-/tmp}:/vault:ro
       - ${RAG_PDF_BOOKS_PATH:-/tmp}:/books:ro
       - ${RAG_PDF_RESOURCES_PATH:-/tmp}:/resources:ro
       - ${RAG_JSON_PATH:-/tmp}:/index:ro
+      # Extractor pipeline: writable output directory for text_output/, indexed/, resources.db
+      - ${RAG_OUTPUT_PATH:-/tmp}:/extractor-out
+      # Catalog inputs and Obsidian-generated folder
+      - ${RAG_CATALOG_PATH:-/tmp}:/catalog:ro
+      - ${RAG_MOCS_PATH:-/tmp}:/mocs
     environment:
       RAG_VAULT_PATH: /vault
       RAG_PDF_BOOKS_PATH: /books
@@ -33,6 +38,13 @@ services:
       RAG_JSON_PATH: /index
       RAG_INDEX_PATH: /data/chroma
       RAG_LOG_PATH: /data/logs/rag.log
+      # Extractor pipeline env overrides
+      RAG_BOOKS_PATH: /books
+      RAG_RESOURCES_PATH: /resources
+      RAG_CATALOG_PATH: /catalog
+      RAG_OUTPUT_PATH: /extractor-out
+      RAG_OBSIDIAN_NOTES_PATH: /mocs/Resource Notes
+      RAG_MOCS_PATH: /mocs
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
 

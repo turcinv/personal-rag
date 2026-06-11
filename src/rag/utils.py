@@ -42,18 +42,27 @@ def _find_config() -> Path:
 def load_config() -> dict:
     """Load config.yaml and apply environment variable overrides.
 
-    Override user-specific paths without editing config.yaml:
+    RAG indexer overrides:
         RAG_VAULT_PATH          overrides vault_path
         RAG_PDF_BOOKS_PATH      overrides pdf_sources entry with type=book
         RAG_PDF_RESOURCES_PATH  overrides pdf_sources entry with type=resource
         RAG_JSON_PATH           overrides json_sources to a single directory
         RAG_INDEX_PATH          overrides index_path (ChromaDB storage dir)
         RAG_CONFIG_PATH         overrides the config.yaml location itself
+
+    Extractor pipeline overrides (config.extractor.*):
+        RAG_BOOKS_PATH          overrides extractor.books_path
+        RAG_RESOURCES_PATH      overrides extractor.resources_path
+        RAG_CATALOG_PATH        overrides extractor.catalog_path
+        RAG_OUTPUT_PATH         overrides extractor.output_path
+        RAG_OBSIDIAN_NOTES_PATH overrides extractor.obsidian_notes_path
+        RAG_MOCS_PATH           overrides extractor.mocs_path
     """
     config_path = _find_config()
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
+    # RAG indexer overrides.
     if vault := os.environ.get("RAG_VAULT_PATH"):
         cfg["vault_path"] = vault
     if books := os.environ.get("RAG_PDF_BOOKS_PATH"):
@@ -68,6 +77,21 @@ def load_config() -> dict:
         cfg["json_sources"] = [{"path": json_path}]
     if index := os.environ.get("RAG_INDEX_PATH"):
         cfg["index_path"] = index
+
+    # Extractor pipeline overrides.
+    ext = cfg.setdefault("extractor", {})
+    if v := os.environ.get("RAG_BOOKS_PATH"):
+        ext["books_path"] = v
+    if v := os.environ.get("RAG_RESOURCES_PATH"):
+        ext["resources_path"] = v
+    if v := os.environ.get("RAG_CATALOG_PATH"):
+        ext["catalog_path"] = v
+    if v := os.environ.get("RAG_OUTPUT_PATH"):
+        ext["output_path"] = v
+    if v := os.environ.get("RAG_OBSIDIAN_NOTES_PATH"):
+        ext["obsidian_notes_path"] = v
+    if v := os.environ.get("RAG_MOCS_PATH"):
+        ext["mocs_path"] = v
 
     return cfg
 

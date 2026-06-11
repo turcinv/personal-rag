@@ -3,6 +3,7 @@ chroma_db/
 logs/
 __pycache__/
 *.pyc
+*.egg-info/
 .DS_Store
 
 # Environment variable overrides (user-specific paths)

@@ -1,6 +1,12 @@
 .PHONY: help install index query test test-unit build build-jetson \
         docker-index docker-query docker-test \
-        jetson-index jetson-query jetson-test
+        jetson-index jetson-query jetson-test \
+        extract enrich build-index build-notes build-sqlite build-vault-index \
+        dup-detect link-mocs search analyze \
+        docker-extract docker-enrich docker-build-index docker-build-notes \
+        docker-build-sqlite docker-build-vault-index docker-dup-detect docker-link-mocs \
+        jetson-extract jetson-enrich jetson-build-index jetson-build-notes \
+        jetson-build-sqlite jetson-build-vault-index jetson-dup-detect jetson-link-mocs
 
 PYTHON := .venv/bin/python
 Q      ?=
@@ -9,25 +15,35 @@ K      ?=
 help:
 	@echo ""
 	@echo "Setup:"
-	@echo "  make install            create venv and install package"
+	@echo "  make install              create venv and install package"
 	@echo ""
-	@echo "Local:"
-	@echo "  make index              reindex vault + PDFs"
-	@echo "  make query Q=\"...\"      semantic query"
-	@echo "  make test-unit          offline pytest unit suite"
-	@echo "  make test [K=keyword]   retrieval smoke tests (needs an index)"
+	@echo "RAG (local):"
+	@echo "  make index                reindex vault + PDFs into ChromaDB"
+	@echo "  make query Q=\"...\"        semantic query"
+	@echo "  make test-unit            offline pytest unit suite"
+	@echo "  make test [K=keyword]     retrieval smoke tests (needs an index)"
+	@echo ""
+	@echo "Extractor pipeline (local) — run in order for a full pipeline run:"
+	@echo "  make analyze              pre-flight survey of books/resources dirs"
+	@echo "  make extract              extract text from PDFs/EPUBs (Books + Resources)"
+	@echo "  make enrich               enrich inventory metadata from embedded fields"
+	@echo "  make build-index          join inventory + text into indexed/*.json"
+	@echo "  make build-notes          generate Obsidian Resource Notes"
+	@echo "  make build-sqlite         build FTS5 SQLite database"
+	@echo "  make build-vault-index    index vault Knowledge/ notes into JSONL"
+	@echo "  make dup-detect           near-duplicate detection report"
+	@echo "  make link-mocs            inject resource backlinks into Topic MOCs"
+	@echo "  make search Q=\"...\"        CLI FTS search over resources.db"
 	@echo ""
 	@echo "Docker x86:"
-	@echo "  make build              build personal-rag:latest"
-	@echo "  make docker-index"
-	@echo "  make docker-query Q=\"...\""
-	@echo "  make docker-test [K=keyword]"
+	@echo "  make build                build personal-rag:latest"
+	@echo "  make docker-index / docker-query Q=\"...\""
+	@echo "  make docker-extract / docker-enrich / docker-build-index ..."
 	@echo ""
 	@echo "Docker Jetson (run on Jetson):"
-	@echo "  make build-jetson       build personal-rag:jetson"
-	@echo "  make jetson-index"
-	@echo "  make jetson-query Q=\"...\""
-	@echo "  make jetson-test [K=keyword]"
+	@echo "  make build-jetson         build personal-rag:jetson"
+	@echo "  make jetson-index / jetson-query Q=\"...\""
+	@echo "  make jetson-extract / jetson-enrich / jetson-build-index ..."
 	@echo ""
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
@@ -37,7 +53,7 @@ install:
 	uv pip install -r requirements.txt
 	uv pip install -e . --no-deps
 
-# ── Local ─────────────────────────────────────────────────────────────────────
+# ── Local: RAG ────────────────────────────────────────────────────────────────
 
 index:
 	.venv/bin/rag-index
@@ -50,6 +66,72 @@ test:
 
 test-unit:
 	$(PYTHON) -m pytest tests/ -q
+
+# ── Local: Extractor pipeline ─────────────────────────────────────────────────
+# Paths are taken from config.yaml extractor: section.
+# Use shell expansion to read them from the config if needed, or just pass
+# the args directly since the scripts accept CLI arguments.
+
+CATALOG    := $(shell $(PYTHON) -c "import yaml,os; c=yaml.safe_load(open('config.yaml')); e=c.get('extractor',{}); print(e.get('catalog_path',''))" 2>/dev/null)
+OUTPUT     := $(shell $(PYTHON) -c "import yaml,os; c=yaml.safe_load(open('config.yaml')); e=c.get('extractor',{}); print(os.path.expanduser(e.get('output_path','~/Documents/knowledge-base-index')))" 2>/dev/null)
+BOOKS      := $(shell $(PYTHON) -c "import yaml; c=yaml.safe_load(open('config.yaml')); e=c.get('extractor',{}); print(e.get('books_path',''))" 2>/dev/null)
+RESOURCES  := $(shell $(PYTHON) -c "import yaml; c=yaml.safe_load(open('config.yaml')); e=c.get('extractor',{}); print(e.get('resources_path',''))" 2>/dev/null)
+NOTES_OUT  := $(shell $(PYTHON) -c "import yaml; c=yaml.safe_load(open('config.yaml')); e=c.get('extractor',{}); print(e.get('obsidian_notes_path',''))" 2>/dev/null)
+MOCS       := $(shell $(PYTHON) -c "import yaml; c=yaml.safe_load(open('config.yaml')); e=c.get('extractor',{}); print(e.get('mocs_path',''))" 2>/dev/null)
+VAULT      := $(shell $(PYTHON) -c "import yaml; c=yaml.safe_load(open('config.yaml')); print(c.get('vault_path',''))" 2>/dev/null)
+
+analyze:
+	.venv/bin/rag-analyze "$(BOOKS)"
+	.venv/bin/rag-analyze "$(RESOURCES)"
+
+extract:
+	.venv/bin/rag-extract "$(BOOKS)"
+	.venv/bin/rag-extract "$(RESOURCES)"
+
+enrich:
+	.venv/bin/rag-enrich \
+	    --inventory "$(CATALOG)/resource_inventory.jsonl" \
+	    --source-dir "$(BOOKS)" --source-dir "$(RESOURCES)" \
+	    --text-dir "$(BOOKS)/text_output" --text-dir "$(RESOURCES)/text_output" \
+	    --out "$(CATALOG)/resource_inventory_enriched.jsonl"
+
+build-index:
+	.venv/bin/rag-build-index \
+	    --inventory "$(CATALOG)/resource_inventory_enriched.jsonl" \
+	    --text-dir "$(BOOKS)/text_output" --text-dir "$(RESOURCES)/text_output" \
+	    --out "$(OUTPUT)/indexed"
+
+build-notes:
+	.venv/bin/rag-build-notes \
+	    --inventory "$(CATALOG)/resource_inventory_enriched.jsonl" \
+	    --text-dir "$(BOOKS)/text_output" --text-dir "$(RESOURCES)/text_output" \
+	    --generated-dir "$(MOCS)" \
+	    --out "$(NOTES_OUT)"
+
+build-sqlite:
+	.venv/bin/rag-build-sqlite \
+	    --jsonl "$(OUTPUT)/indexed/index_documents.jsonl" \
+	    --jsonl "$(OUTPUT)/indexed/vault_documents.jsonl" \
+	    --db    "$(OUTPUT)/resources.db"
+
+build-vault-index:
+	.venv/bin/rag-build-vault-index \
+	    --vault "$(VAULT)" \
+	    --out   "$(OUTPUT)/indexed"
+
+dup-detect:
+	.venv/bin/rag-dup-detect \
+	    --inventory "$(CATALOG)/resource_inventory_enriched.jsonl" \
+	    --text-dir "$(BOOKS)/text_output" --text-dir "$(RESOURCES)/text_output" \
+	    --out "$(MOCS)/Content Duplicate Candidates.md"
+
+link-mocs:
+	.venv/bin/rag-link-mocs \
+	    --inventory "$(CATALOG)/resource_inventory_enriched.jsonl" \
+	    --generated-dir "$(MOCS)"
+
+search:
+	.venv/bin/rag-search $(Q)
 
 # ── Docker x86 ────────────────────────────────────────────────────────────────
 
@@ -65,6 +147,52 @@ docker-query:
 docker-test:
 	docker compose run --rm rag python tests/test_queries.py $(K)
 
+docker-extract:
+	docker compose run --rm rag rag-extract /books
+	docker compose run --rm rag rag-extract /resources
+
+docker-enrich:
+	docker compose run --rm rag rag-enrich \
+	    --inventory /catalog/resource_inventory.jsonl \
+	    --source-dir /books --source-dir /resources \
+	    --text-dir /books/text_output --text-dir /resources/text_output \
+	    --out /catalog/resource_inventory_enriched.jsonl
+
+docker-build-index:
+	docker compose run --rm rag rag-build-index \
+	    --inventory /catalog/resource_inventory_enriched.jsonl \
+	    --text-dir /books/text_output --text-dir /resources/text_output \
+	    --out /extractor-out/indexed
+
+docker-build-notes:
+	docker compose run --rm rag rag-build-notes \
+	    --inventory /catalog/resource_inventory_enriched.jsonl \
+	    --text-dir /books/text_output --text-dir /resources/text_output \
+	    --generated-dir /mocs \
+	    --out "/mocs/Resource Notes"
+
+docker-build-sqlite:
+	docker compose run --rm rag rag-build-sqlite \
+	    --jsonl /extractor-out/indexed/index_documents.jsonl \
+	    --jsonl /extractor-out/indexed/vault_documents.jsonl \
+	    --db    /extractor-out/resources.db
+
+docker-build-vault-index:
+	docker compose run --rm rag rag-build-vault-index \
+	    --vault /vault \
+	    --out   /extractor-out/indexed
+
+docker-dup-detect:
+	docker compose run --rm rag rag-dup-detect \
+	    --inventory /catalog/resource_inventory_enriched.jsonl \
+	    --text-dir /books/text_output --text-dir /resources/text_output \
+	    --out "/mocs/Content Duplicate Candidates.md"
+
+docker-link-mocs:
+	docker compose run --rm rag rag-link-mocs \
+	    --inventory /catalog/resource_inventory_enriched.jsonl \
+	    --generated-dir /mocs
+
 # ── Docker Jetson ─────────────────────────────────────────────────────────────
 
 build-jetson:
@@ -78,3 +206,49 @@ jetson-query:
 
 jetson-test:
 	docker compose -f docker-compose.jetson.yml run --rm rag python tests/test_queries.py $(K)
+
+jetson-extract:
+	docker compose -f docker-compose.jetson.yml run --rm rag rag-extract /books
+	docker compose -f docker-compose.jetson.yml run --rm rag rag-extract /resources
+
+jetson-enrich:
+	docker compose -f docker-compose.jetson.yml run --rm rag rag-enrich \
+	    --inventory /catalog/resource_inventory.jsonl \
+	    --source-dir /books --source-dir /resources \
+	    --text-dir /books/text_output --text-dir /resources/text_output \
+	    --out /catalog/resource_inventory_enriched.jsonl
+
+jetson-build-index:
+	docker compose -f docker-compose.jetson.yml run --rm rag rag-build-index \
+	    --inventory /catalog/resource_inventory_enriched.jsonl \
+	    --text-dir /books/text_output --text-dir /resources/text_output \
+	    --out /extractor-out/indexed
+
+jetson-build-notes:
+	docker compose -f docker-compose.jetson.yml run --rm rag rag-build-notes \
+	    --inventory /catalog/resource_inventory_enriched.jsonl \
+	    --text-dir /books/text_output --text-dir /resources/text_output \
+	    --generated-dir /mocs \
+	    --out "/mocs/Resource Notes"
+
+jetson-build-sqlite:
+	docker compose -f docker-compose.jetson.yml run --rm rag rag-build-sqlite \
+	    --jsonl /extractor-out/indexed/index_documents.jsonl \
+	    --jsonl /extractor-out/indexed/vault_documents.jsonl \
+	    --db    /extractor-out/resources.db
+
+jetson-build-vault-index:
+	docker compose -f docker-compose.jetson.yml run --rm rag rag-build-vault-index \
+	    --vault /vault \
+	    --out   /extractor-out/indexed
+
+jetson-dup-detect:
+	docker compose -f docker-compose.jetson.yml run --rm rag rag-dup-detect \
+	    --inventory /catalog/resource_inventory_enriched.jsonl \
+	    --text-dir /books/text_output --text-dir /resources/text_output \
+	    --out "/mocs/Content Duplicate Candidates.md"
+
+jetson-link-mocs:
+	docker compose -f docker-compose.jetson.yml run --rm rag rag-link-mocs \
+	    --inventory /catalog/resource_inventory_enriched.jsonl \
+	    --generated-dir /mocs
