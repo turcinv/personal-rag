@@ -33,6 +33,12 @@ def should_exclude(path: Path, vault_path: Path, config: dict) -> bool:
 def extract_md_file(md_file: Path, vault_path: Path, config: dict, max_chars: int, overlap: int):
     """Parse one Markdown file → (ids, documents, metadatas, error)."""
     rel_path = md_file.relative_to(vault_path).as_posix()
+    # Mid-granularity facet between `domain` and `tags`: the subfolder under
+    # Knowledge/<Domain>/ when one exists (e.g. "Python & Backend Development").
+    # Notes that live at the domain root have no path subdomain; a frontmatter
+    # `subdomain:` value overrides this (read below) for flat-layout domains.
+    _parts = rel_path.split("/")
+    path_subdomain = _parts[2] if (len(_parts) > 3 and _parts[0] == "Knowledge") else ""
     try:
         raw = md_file.read_text(encoding="utf-8", errors="ignore")
         raw = re.sub(r"\{\{[^}]+\}\}", "", raw)  # strip unresolved Obsidian template vars
@@ -51,6 +57,7 @@ def extract_md_file(md_file: Path, vault_path: Path, config: dict, max_chars: in
     status = str(meta.get("status") or "")
     source = str(meta.get("source") or "")
     confidence = str(meta.get("confidence") or "")
+    subdomain = path_subdomain or str(meta.get("subdomain") or "")
     tags_value = meta.get("tags") or []
     tags = ", ".join(str(t) for t in tags_value) if isinstance(tags_value, list) else str(tags_value)
     # Wikilinks come from the FULL body (incl. Related Topics) so the graph
@@ -69,8 +76,8 @@ def extract_md_file(md_file: Path, vault_path: Path, config: dict, max_chars: in
             documents.append(chunk)
             metadatas.append({
                 "path": rel_path, "title": title, "heading": heading,
-                "type": note_type, "domain": domain, "status": status,
-                "source": source, "confidence": confidence,
+                "type": note_type, "domain": domain, "subdomain": subdomain,
+                "status": status, "source": source, "confidence": confidence,
                 "tags": tags, "wikilinks": wikilinks,
             })
     return ids, documents, metadatas, None
