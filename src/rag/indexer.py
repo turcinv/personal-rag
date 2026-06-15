@@ -5,6 +5,7 @@ existing index, then run every configured source (see ``extractors.iter_sources`
 through the incremental engine (see ``indexing.run_source``) and prune stale
 chunks. Entry point: ``rag-index``."""
 
+import argparse
 import logging
 from pathlib import Path
 
@@ -23,12 +24,24 @@ log = logger.info  # bound to the shared 'rag' logger; configured by setup_loggi
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Index vault + PDFs + JSON into ChromaDB.")
+    parser.add_argument(
+        "--metric", default="l2", choices=["l2", "cosine", "ip"],
+        help="Distance metric for the ChromaDB collection (default: l2). "
+             "Only applied at collection creation; ignored if the collection already exists.",
+    )
+    parser.add_argument(
+        "--collection", default=None, metavar="NAME",
+        help="Override the collection name from config.yaml.",
+    )
+    args = parser.parse_args()
+
     config = load_config()
     setup_logging(config)
 
     vault_path      = Path(config["vault_path"]).expanduser().resolve()
     index_path      = config.get("index_path", "./chroma_db")
-    collection_name = config.get("collection_name", "obsidian_markdown")
+    collection_name = args.collection or config.get("collection_name", "obsidian_markdown")
     max_chars       = int(config.get("chunk_max_chars", 1200))
     overlap         = int(config.get("chunk_overlap_chars", 150))
     model_name      = config.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
@@ -42,6 +55,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     log(f"Vault: {vault_path}")
+    log(f"Collection: {collection_name}  |  metric: {args.metric}")
     log(f"Embedding model: {model_name}  |  device: {device}" +
         (f" ({torch.cuda.get_device_name(0)})" if device == "cuda" else ""))
     log(f"Chunk max chars: {max_chars}  |  overlap: {overlap}")
@@ -55,7 +69,10 @@ def main():
         path=index_path,
         settings=chromadb.Settings(anonymized_telemetry=False),
     )
-    collection = client.get_or_create_collection(name=collection_name)
+    coll_kwargs: dict = {"name": collection_name}
+    if args.metric != "l2":
+        coll_kwargs["metadata"] = {"hnsw:space": args.metric}
+    collection = client.get_or_create_collection(**coll_kwargs)
 
     # Incremental indexing: snapshot the IDs + metadata already in the index.
     # Chunk IDs are content-hashed, so unchanged body text keeps the same ID;

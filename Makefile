@@ -1,6 +1,7 @@
-.PHONY: help install index query test test-unit build build-jetson \
+.PHONY: help install index query pipeline-status compare sync-to-jetson test test-unit build build-jetson \
         docker-index docker-query docker-test \
-        jetson-index jetson-query jetson-test \
+        jetson-pipeline-status jetson-index-all jetson-full-pipeline \
+        jetson-index jetson-index-cos jetson-index-dot jetson-query jetson-compare jetson-test \
         extract enrich build-index build-notes build-sqlite build-vault-index \
         dup-detect link-mocs search analyze \
         docker-extract docker-enrich docker-build-index docker-build-notes \
@@ -12,6 +13,13 @@ PYTHON := .venv/bin/python
 Q      ?=
 K      ?=
 
+# Jetson sync — set JETSON_HOST and JETSON_OUTPUT_PATH in .env or on the command line.
+# Example: make sync-to-jetson JETSON_HOST=turcinv@gpu-01
+-include .env
+export
+JETSON_HOST        ?= gpu-01
+JETSON_OUTPUT_PATH ?= ~/knowledge-base-index
+
 help:
 	@echo ""
 	@echo "Setup:"
@@ -20,6 +28,9 @@ help:
 	@echo "RAG (local):"
 	@echo "  make index                reindex vault + PDFs into ChromaDB"
 	@echo "  make query Q=\"...\"        semantic query"
+	@echo "  make pipeline-status      check all extraction pipeline outputs"
+	@echo "  make compare Q=\"...\"      compare query results across L2/cosine/dot collections"
+	@echo "  make sync-to-jetson       rsync all extraction outputs to Jetson (set JETSON_HOST)"
 	@echo "  make test-unit            offline pytest unit suite"
 	@echo "  make test [K=keyword]     retrieval smoke tests (needs an index)"
 	@echo ""
@@ -42,7 +53,14 @@ help:
 	@echo ""
 	@echo "Docker Jetson (run on Jetson):"
 	@echo "  make build-jetson         build personal-rag:jetson"
-	@echo "  make jetson-index / jetson-query Q=\"...\""
+	@echo "  make jetson-pipeline-status     check all extraction pipeline outputs"
+	@echo "  make jetson-index-all           index into L2 + cosine + dot collections"
+	@echo "  make jetson-full-pipeline       extract + enrich + build + index (all steps)"
+	@echo "  make jetson-index               reindex into L2 collection only"
+	@echo "  make jetson-index-cos           reindex into cosine collection"
+	@echo "  make jetson-index-dot           reindex into dot-product collection"
+	@echo "  make jetson-query Q=\"...\"       semantic query"
+	@echo "  make jetson-compare Q=\"...\"     compare L2 / cosine / dot results"
 	@echo "  make jetson-extract / jetson-enrich / jetson-build-index ..."
 	@echo ""
 
@@ -60,6 +78,21 @@ index:
 
 query:
 	.venv/bin/rag-query $(Q)
+
+pipeline-status:
+	-.venv/bin/rag-pipeline-status
+
+compare:
+	.venv/bin/rag-compare $(Q)
+
+# Sync all extraction outputs (text_output_*, indexed/, resources.db) from macOS → Jetson.
+# Set JETSON_HOST in .env or pass on the command line: make sync-to-jetson JETSON_HOST=gpu-01
+sync-to-jetson:
+	@echo "Syncing knowledge-base-index → $(JETSON_HOST):$(JETSON_OUTPUT_PATH)"
+	rsync -avz --progress \
+		$(shell python3 -c "import yaml,os; c=yaml.safe_load(open('config.yaml')); print(os.path.expanduser(c.get('extractor',{}).get('output_path','~/Documents/knowledge-base-index')))") \
+		$(JETSON_HOST):$(JETSON_OUTPUT_PATH)
+	@echo "Done. Run 'make build-jetson && make jetson-index-all' on the Jetson."
 
 test:
 	$(PYTHON) tests/test_queries.py $(K)
@@ -198,11 +231,35 @@ docker-link-mocs:
 build-jetson:
 	docker build -f Dockerfile.jetson -t personal-rag:jetson .
 
+jetson-pipeline-status:
+	-docker compose -f docker-compose.jetson.yml run --rm rag python -m rag.pipeline_status
+
+# Index into all three metric collections in sequence (L2 → cosine → dot product).
+# Use after syncing indexed/ from macOS when extraction is already done.
+jetson-index-all: jetson-index jetson-index-cos jetson-index-dot
+
+# Full pipeline: extraction → enrichment → build steps → all three indexes.
+# Requires PDF source mounts (RAG_PDF_BOOKS_PATH / RAG_PDF_RESOURCES_PATH) to be set.
+jetson-full-pipeline: jetson-extract jetson-enrich jetson-build-index jetson-build-notes \
+                      jetson-build-sqlite jetson-build-vault-index jetson-link-mocs \
+                      jetson-index-all
+
 jetson-index:
 	docker compose -f docker-compose.jetson.yml run --rm rag python -m rag.indexer
 
+jetson-index-cos:
+	docker compose -f docker-compose.jetson.yml run --rm rag \
+		python -m rag.indexer --metric cosine --collection obsidian_markdown_cos
+
+jetson-index-dot:
+	docker compose -f docker-compose.jetson.yml run --rm rag \
+		python -m rag.indexer --metric ip --collection obsidian_markdown_dot
+
 jetson-query:
 	docker compose -f docker-compose.jetson.yml run --rm rag python -m rag.query $(Q)
+
+jetson-compare:
+	docker compose -f docker-compose.jetson.yml run --rm rag python -m rag.compare $(Q)
 
 jetson-test:
 	docker compose -f docker-compose.jetson.yml run --rm rag python tests/test_queries.py $(K)
