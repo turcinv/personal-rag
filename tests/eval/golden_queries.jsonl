@@ -1,0 +1,45 @@
+{"query": "how do I troubleshoot a Kubernetes pod stuck in Pending state", "expected": ["Kubernetes Pod Pending State Troubleshooting"], "kind": "vault"}
+{"query": "what are ReplicaSets, Deployments and rolling updates in Kubernetes", "expected": ["ReplicaSets Deployments and Rolling Updates"], "kind": "vault"}
+{"query": "how to disable a stuck Kubernetes in Docker Desktop", "expected": ["SOP Disable Stuck Kubernetes in Docker Desktop"], "kind": "vault"}
+{"query": "dot product versus cosine similarity for semantic search vectors", "expected": ["Dot Product vs. Cosine Similarity", "Mathematical Vectors in Semantic Search"], "kind": "vault"}
+{"query": "how to evaluate retrieval quality in a RAG system", "expected": ["Retrieval Evaluation Workflow for RAG Systems", "Dataset Sizing Strategy for RAG Evaluation"], "kind": "vault"}
+{"query": "logging strategy for PDF indexing pipeline", "expected": ["Logging Strategy for PDF Indexing"], "kind": "vault"}
+{"query": "strategy for scaling RAG corpus import", "expected": ["RAG Corpus Import Scaling Strategy"], "kind": "vault"}
+{"query": "how to extract 2FA tokens from Google Authenticator", "expected": ["2FA Token Extraction from Google Authenticator"], "kind": "vault"}
+{"query": "set up GPG and YubiKey for SSH on macOS", "expected": ["GPG and YubiKey SSH Setup on macOS"], "kind": "vault"}
+{"query": "identify network devices using nmap fingerprinting", "expected": ["Identifying Network Devices with Nmap Fingerprinting"], "kind": "vault"}
+{"query": "rules of engagement for infrastructure penetration testing", "expected": ["Rules of Engagement for Infrastructure and Application Penetration Testing"], "kind": "vault"}
+{"query": "import a certificate into the YubiKey PIV authentication slot", "expected": ["Importing Certificates into YubiKey PIV Authentication Slot"], "kind": "vault"}
+{"query": "KeePassXC SSH agent no agent running error", "expected": ["KeePassXC SSH Agent No Agent Running Troubleshooting"], "kind": "vault"}
+{"query": "learning rate decay schedules for training", "expected": ["Learning Rate Decay Schedules"], "kind": "vault"}
+{"query": "human level performance as a proxy for Bayes error", "expected": ["Human Level Performance as a Proxy for Bayes Error"], "kind": "vault"}
+{"query": "how to configure Django static files", "expected": ["Django Static Files Configuration"], "kind": "vault"}
+{"query": "REST API HTTP method semantics", "expected": ["REST API Method Semantics"], "kind": "vault"}
+{"query": "managing sensitive environment variables in version control", "expected": ["Managing Sensitive Environment Variables in Version Control"], "kind": "vault"}
+{"query": "static type checking mitigations for Python data science libraries", "expected": ["Python Static Type Checking Mitigations for Data Science Libraries"], "kind": "vault"}
+{"query": "why avoid writing a ZIP file into itself", "expected": ["Avoid Writing a ZIP File Into Itself"], "kind": "vault"}
+{"query": "what ports does Pi-hole require", "expected": ["Pi-hole Port Requirements"], "kind": "vault"}
+{"query": "configure Tailscale subnet routing on Linux", "expected": ["Configuring Tailscale Subnet Routing on Linux"], "kind": "vault"}
+{"query": "persistent IP assignment through DHCP reservation", "expected": ["Persistent IP Assignment Through DHCP Reservations"], "kind": "vault"}
+{"query": "OpenVPN Access Server licensing model", "expected": ["OpenVPN Access Server Licensing Model"], "kind": "vault"}
+{"query": "which VPN to choose for a home lab", "expected": ["VPN Selection for Home Labs"], "kind": "vault"}
+{"query": "K3s edge AI cluster architecture", "expected": ["K3s Edge AI Cluster Architecture"], "kind": "vault"}
+{"query": "Tekton EventListener configuration", "expected": ["Tekton EventListener Configuration"], "kind": "vault"}
+{"query": "check a USB disk filesystem with grml", "expected": ["USB Disk Filesystem Check with grml"], "kind": "vault"}
+{"query": "architectural differences between Cursor and Visual Studio Code", "expected": ["Architectural Differences Between Cursor and Visual Studio Code"], "kind": "vault"}
+{"query": "MLOps runtime for bioreactor simulations", "expected": ["MLOps Runtime for Bioreactor Simulations"], "kind": "vault"}
+{"query": "hands-on machine learning with scikit-learn keras and tensorflow", "expected": ["Hands On Machine Learning"], "kind": "resource"}
+{"query": "battle-tested tips for using Claude Code for agentic coding", "expected": ["101 Claude Code Tips"], "kind": "resource"}
+{"query": "patterns for API design and simplifying integration", "expected": ["Patterns for API Design"], "kind": "resource"}
+{"query": "continuous API management practices", "expected": ["Continuous API Management"], "kind": "resource"}
+{"query": "head first design patterns book", "expected": ["Head First Design Patterns"], "kind": "resource"}
+{"query": "learning Helm for packaging Kubernetes applications", "expected": ["Learning Helm"], "kind": "resource"}
+{"query": "Kubernetes for beginners course", "expected": ["KubernetesForBeginners"], "kind": "resource"}
+{"query": "Python for DevOps automation", "expected": ["Python for DevOps"], "kind": "resource"}
+{"query": "full stack Python security", "expected": ["Full Stack Python Security"], "kind": "resource"}
+{"query": "migrating from a monolith to microservices", "expected": ["Monolith to Microservices"], "kind": "resource"}
+{"query": "learning GitHub Actions for CI/CD", "expected": ["Learning GitHub Actions"], "kind": "resource"}
+{"query": "PostgreSQL up and running database book", "expected": ["postgresql"], "kind": "resource"}
+{"query": "building APIs with FastAPI", "expected": ["fastapi"], "kind": "resource"}
+{"query": "building serverless applications on Knative", "expected": ["Building Serverless Applications on Knative"], "kind": "resource"}
+{"query": "learning Dapr for distributed systems", "expected": ["Learning Dapr"], "kind": "resource"}

@@ -1,4 +1,11 @@
-"""Semantic query CLI with metadata filters and JSON output."""
+"""Semantic query over the indexed vault + PDFs.
+
+The retrieval core lives in :func:`search` — an importable seam shared by this
+CLI (``rag-query``) and the eval harness (``scripts/eval_recall.py``). ``main()``
+is a thin wrapper that parses args, builds a metadata filter, calls ``search()``,
+and formats the output. Reranking (Phase 3c) and BM25 hybrid (Phase 3d) hook in
+through the ``rerank`` / ``hybrid`` toggles on ``search()``.
+"""
 
 import argparse
 import json
@@ -8,6 +15,12 @@ from .utils import load_config, setup_logging  # sets telemetry env var and patc
 
 import chromadb
 from sentence_transformers import SentenceTransformer
+
+logger = logging.getLogger("rag")
+
+# Cache embedding models across search() calls in one process. The eval harness
+# issues dozens of queries back-to-back; reloading the model each time is wasteful.
+_MODEL_CACHE: dict = {}
 
 
 def build_where(domain=None, type_=None, source=None, confidence=None, subdomain=None):
@@ -28,6 +41,87 @@ def build_where(domain=None, type_=None, source=None, confidence=None, subdomain
     if len(filters) == 1:
         return filters[0]
     return {"$and": filters}
+
+
+def get_model(model_name):
+    """Return a cached SentenceTransformer for ``model_name``."""
+    if model_name not in _MODEL_CACHE:
+        _MODEL_CACHE[model_name] = SentenceTransformer(model_name)
+    return _MODEL_CACHE[model_name]
+
+
+def open_collection(config, collection_name=None):
+    """Open the persistent ChromaDB collection named in config (or the override)."""
+    index_path = config.get("index_path", "./chroma_db")
+    name = collection_name or config.get("collection_name", "obsidian_markdown")
+    client = chromadb.PersistentClient(
+        path=index_path,
+        settings=chromadb.Settings(anonymized_telemetry=False),
+    )
+    return client.get_collection(name)
+
+
+def search(
+    query,
+    n_results=8,
+    *,
+    filters=None,
+    config=None,
+    model=None,
+    collection=None,
+    collection_name=None,
+    rerank=False,
+    hybrid=False,
+):
+    """Retrieve the top chunks for ``query``.
+
+    Returns a list of records ordered best-first, each a dict with keys
+    ``document`` (str), ``metadata`` (dict), ``distance`` (float, dense L2/cosine
+    distance) and ``rank`` (1-based). ``filters`` is a prebuilt ChromaDB
+    where-dict (see :func:`build_where`).
+
+    ``model`` / ``collection`` may be passed in to avoid reloading them between
+    calls; otherwise they are resolved from ``config`` (loaded if omitted). The
+    ``rerank`` and ``hybrid`` toggles are implemented in Phase 3c / 3d — until
+    then they are accepted but have no effect on the dense-only path.
+    """
+    if config is None:
+        config = load_config()
+    model_name = config.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
+    if model is None:
+        model = get_model(model_name)
+    if collection is None:
+        collection = open_collection(config, collection_name)
+
+    # Config-driven query prefix (e.g. bge's retrieval instruction). Empty for
+    # models that need none (MiniLM, gte); the passage/index side never prefixes.
+    query_instruction = config.get("query_instruction", "")
+    embed_input = f"{query_instruction}{query}"
+    query_embedding = model.encode([embed_input], normalize_embeddings=True).tolist()[0]
+
+    # rerank/hybrid will widen the candidate pool here and post-process below
+    # (Phase 3c/3d). For now the dense pool is exactly n_results.
+    fetch_k = n_results
+
+    query_kwargs = dict(
+        query_embeddings=[query_embedding],
+        n_results=fetch_k,
+        include=["documents", "metadatas", "distances"],
+    )
+    if filters:
+        query_kwargs["where"] = filters
+
+    results = collection.query(**query_kwargs)
+    docs = results["documents"][0]
+    metas = results["metadatas"][0]
+    distances = results["distances"][0]
+
+    records = [
+        {"document": doc, "metadata": meta, "distance": dist, "rank": i}
+        for i, (doc, meta, dist) in enumerate(zip(docs, metas, distances), start=1)
+    ]
+    logger.info("query=%r n=%d filter=%s -> %d results", query, n_results, filters, len(records))
+    return records
 
 
 def main():
@@ -64,40 +158,14 @@ def main():
     query = " ".join(args.query)
     config = load_config()
     setup_logging(config, console=False)  # log to file only; results print to stdout
-    logger = logging.getLogger("rag")
-    model_name      = config.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
-    index_path      = config.get("index_path", "./chroma_db")
-    collection_name = config.get("collection_name", "obsidian_markdown")
-
-    model = SentenceTransformer(model_name)
-    query_embedding = model.encode([query], normalize_embeddings=True).tolist()[0]
-
-    client = chromadb.PersistentClient(
-        path=index_path,
-        settings=chromadb.Settings(anonymized_telemetry=False),
-    )
-    collection = client.get_collection(collection_name)
 
     where = build_where(args.domain, args.type_, args.source, args.confidence, args.subdomain)
-    query_kwargs = dict(
-        query_embeddings=[query_embedding],
-        n_results=args.n_results,
-        include=["documents", "metadatas", "distances"],
-    )
-    if where:
-        query_kwargs["where"] = where
-
-    results = collection.query(**query_kwargs)
-    docs      = results["documents"][0]
-    metas     = results["metadatas"][0]
-    distances = results["distances"][0]
-
-    logger.info("query=%r n=%d filter=%s -> %d results", query, args.n_results, where, len(docs))
+    records = search(query, args.n_results, filters=where, config=config)
 
     if args.output_json:
         output = [
-            {"distance": dist, "document": doc, **meta}
-            for doc, meta, dist in zip(docs, metas, distances)
+            {"distance": r["distance"], "document": r["document"], **r["metadata"]}
+            for r in records
         ]
         print(json.dumps(output, indent=2, ensure_ascii=False))
         return
@@ -108,7 +176,8 @@ def main():
         print("Filter: " + json.dumps(where))
     print()
 
-    for i, (doc, meta, distance) in enumerate(zip(docs, metas, distances), start=1):
+    for i, r in enumerate(records, start=1):
+        doc, meta, distance = r["document"], r["metadata"], r["distance"]
         print("=" * 80)
         print(f"{i}. {meta.get('title')} - {meta.get('heading')}")
         print(f"Path: {meta.get('path')}")

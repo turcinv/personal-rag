@@ -1,7 +1,7 @@
-.PHONY: help install index query pipeline-status sync-to-jetson test test-unit build build-jetson \
+.PHONY: help install index query eval pipeline-status sync-to-jetson test test-unit build build-jetson \
         docker-index docker-query docker-test \
         jetson-pipeline-status jetson-full-pipeline \
-        jetson-index jetson-query jetson-test \
+        jetson-index jetson-query jetson-eval jetson-test \
         extract enrich build-index build-notes build-sqlite build-vault-index \
         dup-detect link-mocs search analyze \
         docker-extract docker-enrich docker-build-index docker-build-notes \
@@ -12,6 +12,7 @@
 PYTHON := .venv/bin/python
 Q      ?=
 K      ?=
+ARGS   ?=
 
 # Jetson sync — set JETSON_HOST and JETSON_OUTPUT_PATH in .env or on the command line.
 # Example: make sync-to-jetson JETSON_HOST=turcinv@gpu-01
@@ -29,6 +30,7 @@ help:
 	@echo "  make index                reindex vault + PDFs into ChromaDB"
 	@echo "  make query Q=\"...\"        semantic query"
 	@echo "  make pipeline-status      check all extraction pipeline outputs"
+	@echo "  make eval [ARGS=...]      recall@k / MRR eval over golden_queries.jsonl"
 	@echo "  make sync-to-jetson       rsync all extraction outputs to Jetson (set JETSON_HOST)"
 	@echo "  make test-unit            offline pytest unit suite"
 	@echo "  make test [K=keyword]     retrieval smoke tests (needs an index)"
@@ -56,6 +58,7 @@ help:
 	@echo "  make jetson-full-pipeline       extract + enrich + build + index (all steps)"
 	@echo "  make jetson-index               reindex into the ChromaDB collection"
 	@echo "  make jetson-query Q=\"...\"       semantic query"
+	@echo "  make jetson-eval [ARGS=...]     recall@k / MRR eval over golden_queries.jsonl"
 	@echo "  make jetson-extract / jetson-enrich / jetson-build-index ..."
 	@echo ""
 
@@ -76,6 +79,12 @@ query:
 
 pipeline-status:
 	-.venv/bin/rag-pipeline-status
+
+# Recall@k / MRR eval over tests/eval/golden_queries.jsonl (needs a populated index).
+# Record a baseline:  make eval ARGS="--label baseline --out tests/eval/baseline.json"
+# A/B a variant:      make eval ARGS="--label dense --no-rerank"
+eval:
+	$(PYTHON) scripts/eval_recall.py $(ARGS)
 
 # Sync all extraction outputs (text_output_*, indexed/, resources.db) from macOS → Jetson.
 # Set JETSON_HOST in .env or pass on the command line: make sync-to-jetson JETSON_HOST=gpu-01
@@ -237,6 +246,9 @@ jetson-index:
 
 jetson-query:
 	docker compose -f docker-compose.jetson.yml run --rm rag python -m rag.query $(Q)
+
+jetson-eval:
+	docker compose -f docker-compose.jetson.yml run --rm rag python -m rag.eval $(ARGS)
 
 jetson-test:
 	docker compose -f docker-compose.jetson.yml run --rm rag python tests/test_queries.py $(K)
