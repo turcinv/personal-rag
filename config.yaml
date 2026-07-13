@@ -44,9 +44,9 @@ pdf_workers: 1             # threads for parallel PDF extraction; keep at 1 on J
 embedding_workers: 1       # CPU fallback workers (ignored when CUDA is available)
 
 pdf_sources:
-  - path: '/Users/turcinv/Library/CloudStorage/GoogleDrive-turcinv@btlnet.com/My Drive/mindmap/Books/'
+  - path: '/Users/turcinv/Documents/personal_knowledge/Books/'
     type: book
-  - path: '/Users/turcinv/Library/CloudStorage/GoogleDrive-turcinv@btlnet.com/My Drive/mindmap/Resources/'
+  - path: '/Users/turcinv/Documents/personal_knowledge/Resources/'
     type: resource
 
 # Pre-extracted book/resource JSON (doc-text-extractor `indexed/*.json`): full
@@ -65,8 +65,8 @@ json_sources:
 # when running in Docker — the Makefile extractor targets do this automatically.
 extractor:
   # Source document directories (Books and Resources are the two input groups).
-  books_path: '/Users/turcinv/Library/CloudStorage/GoogleDrive-turcinv@btlnet.com/My Drive/mindmap/Books'
-  resources_path: '/Users/turcinv/Library/CloudStorage/GoogleDrive-turcinv@btlnet.com/My Drive/mindmap/Resources'
+  books_path: '/Users/turcinv/Documents/personal_knowledge/Books'
+  resources_path: '/Users/turcinv/Documents/personal_knowledge/Resources'
 
   # Catalog inventory files (read-only canonical inputs).
   catalog_path: '/Users/turcinv/Documents/personal_knowledge/Career Knowledge Base/Resources/_catalog'
