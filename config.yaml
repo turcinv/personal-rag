@@ -49,6 +49,15 @@ embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
 # asymmetric model like bge-small-en-v1.5 would set "Represent this sentence for
 # searching relevant passages: " here.
 query_instruction: ""
+
+# Cross-encoder reranker (query-time only, no reindex). search()/rag-query
+# retrieve rerank_fetch_k dense candidates, then reorder to the requested
+# n_results with this model. Default-on; disable with `rag-query --no-rerank`
+# or `make eval ARGS=--no-rerank`. The model is ~80 MB and, like the embedder,
+# is fetched from HF at first use — it must be present in the Jetson HF cache
+# for offline runs (it ships in the already-pinned sentence-transformers).
+reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+rerank_fetch_k: 20
 embedding_batch_size: 16   # chunks per embed call — keep small on Jetson (8 GB unified RAM)
 markdown_workers: 1        # threads for parallel MD extraction (I/O bound); 1 = sequential
 pdf_workers: 1             # threads for parallel PDF extraction; keep at 1 on Jetson

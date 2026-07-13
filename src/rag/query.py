@@ -18,9 +18,13 @@ from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger("rag")
 
-# Cache embedding models across search() calls in one process. The eval harness
-# issues dozens of queries back-to-back; reloading the model each time is wasteful.
+# Cache embedding + reranker models across search() calls in one process. The
+# eval harness issues dozens of queries back-to-back; reloading each time is
+# wasteful.
 _MODEL_CACHE: dict = {}
+_RERANKER_CACHE: dict = {}
+
+DEFAULT_RERANKER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 
 def build_where(domain=None, type_=None, source=None, confidence=None, subdomain=None):
@@ -48,6 +52,15 @@ def get_model(model_name):
     if model_name not in _MODEL_CACHE:
         _MODEL_CACHE[model_name] = SentenceTransformer(model_name)
     return _MODEL_CACHE[model_name]
+
+
+def get_reranker(model_name):
+    """Return a cached CrossEncoder reranker for ``model_name`` (lazy import —
+    only pulled in when reranking is actually requested)."""
+    if model_name not in _RERANKER_CACHE:
+        from sentence_transformers import CrossEncoder
+        _RERANKER_CACHE[model_name] = CrossEncoder(model_name)
+    return _RERANKER_CACHE[model_name]
 
 
 def get_client(config):
@@ -85,9 +98,10 @@ def search(
     where-dict (see :func:`build_where`).
 
     ``model`` / ``collection`` may be passed in to avoid reloading them between
-    calls; otherwise they are resolved from ``config`` (loaded if omitted). The
-    ``rerank`` and ``hybrid`` toggles are implemented in Phase 3c / 3d — until
-    then they are accepted but have no effect on the dense-only path.
+    calls; otherwise they are resolved from ``config`` (loaded if omitted).
+    ``rerank`` retrieves a wider dense pool (``rerank_fetch_k``, default 20) and
+    reorders it to the top ``n_results`` with a cross-encoder. ``hybrid`` (BM25
+    fusion) is Phase 3d — accepted but not yet wired.
     """
     if config is None:
         config = load_config()
@@ -103,9 +117,10 @@ def search(
     embed_input = f"{query_instruction}{query}"
     query_embedding = model.encode([embed_input], normalize_embeddings=True).tolist()[0]
 
-    # rerank/hybrid will widen the candidate pool here and post-process below
-    # (Phase 3c/3d). For now the dense pool is exactly n_results.
-    fetch_k = n_results
+    # When reranking, retrieve a wider dense candidate pool (default 20) and let
+    # the cross-encoder pick the final n_results from it. (hybrid is Phase 3d.)
+    rerank_fetch_k = int(config.get("rerank_fetch_k", 20))
+    fetch_k = max(n_results, rerank_fetch_k) if rerank else n_results
 
     query_kwargs = dict(
         query_embeddings=[query_embedding],
@@ -124,7 +139,24 @@ def search(
         {"document": doc, "metadata": meta, "distance": dist, "rank": i}
         for i, (doc, meta, dist) in enumerate(zip(docs, metas, distances), start=1)
     ]
-    logger.info("query=%r n=%d filter=%s -> %d results", query, n_results, filters, len(records))
+
+    # Cross-encoder rerank: score each (raw query, chunk) pair and reorder, then
+    # trim to n_results. The reranker sees the natural query — never the
+    # embedding-side instruction prefix.
+    if rerank and records:
+        reranker = get_reranker(config.get("reranker_model", DEFAULT_RERANKER))
+        scores = reranker.predict([(query, r["document"]) for r in records])
+        ranked = sorted(zip(records, scores), key=lambda rs: rs[1], reverse=True)
+        records = []
+        for new_rank, (rec, score) in enumerate(ranked[:n_results], start=1):
+            rec["rerank_score"] = float(score)
+            rec["rank"] = new_rank
+            records.append(rec)
+    else:
+        records = records[:n_results]
+
+    logger.info("query=%r n=%d filter=%s rerank=%s -> %d results",
+                query, n_results, filters, rerank, len(records))
     return records
 
 
@@ -157,6 +189,9 @@ def main():
                         help="Filter by confidence metadata (e.g. high, medium)")
     parser.add_argument("--json", dest="output_json", action="store_true",
                         help="Output results as a JSON array")
+    parser.add_argument("--no-rerank", dest="rerank", action="store_false",
+                        help="Disable cross-encoder reranking (dense retrieval only)")
+    parser.set_defaults(rerank=True)
     args = parser.parse_args()
 
     query = " ".join(args.query)
@@ -164,7 +199,7 @@ def main():
     setup_logging(config, console=False)  # log to file only; results print to stdout
 
     where = build_where(args.domain, args.type_, args.source, args.confidence, args.subdomain)
-    records = search(query, args.n_results, filters=where, config=config)
+    records = search(query, args.n_results, filters=where, config=config, rerank=args.rerank)
 
     if args.output_json:
         output = [

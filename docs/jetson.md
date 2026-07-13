@@ -92,6 +92,17 @@ With 8 GB unified RAM shared between CPU and GPU, keep these config values:
 
 The streaming indexer never accumulates all chunks globally — peak RAM is bounded to one file's chunks at a time.
 
+## Models in the HF cache (offline)
+
+Models are fetched from Hugging Face at first use into the `hf-cache` Docker volume, then reused. Two are needed:
+
+| Model | ~Size | Fetched by | Config key |
+|---|---|---|---|
+| `all-MiniLM-L6-v2` (embedder) | ~90 MB | first `make jetson-index` | `embedding_model` |
+| `cross-encoder/ms-marco-MiniLM-L-6-v2` (reranker) | ~80 MB | first `make jetson-query` / `jetson-eval` (rerank is on by default) | `reranker_model` |
+
+The Jetson needs network access the **first** time each model is used; after that the cache serves them offline. For a fully air-gapped box, pre-populate the `hf-cache` volume (or run one online query with `--no-rerank` omitted so the reranker downloads). Both fit the 8 GB budget alongside the bi-encoder. Disable reranking with `rag-query --no-rerank` / `make eval ARGS=--no-rerank` if you want to skip loading the cross-encoder entirely.
+
 ## Why not `encode_multi_process`
 
 Jetson uses NvSCI IPC instead of CUDA IPC. Cross-process CUDA tensor sharing fails on Jetson. The indexer uses single-process GPU encoding only.

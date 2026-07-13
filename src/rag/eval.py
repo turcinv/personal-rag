@@ -156,6 +156,11 @@ def main():
                         help="Free-text label recorded in the output (e.g. 'baseline')")
     parser.add_argument("--out", default=None,
                         help="Write the full result JSON to this path")
+    parser.add_argument("--no-rerank", dest="rerank", action="store_false",
+                        help="Disable cross-encoder reranking (dense retrieval only)")
+    parser.add_argument("--hybrid", dest="hybrid", action="store_true",
+                        help="Enable BM25+dense hybrid fusion (Phase 3d)")
+    parser.set_defaults(rerank=True, hybrid=False)
     args = parser.parse_args()
 
     config = load_config()
@@ -165,7 +170,8 @@ def main():
         logger.warning("retrieval depth %d < 10; recall@10 will be capped", args.n)
 
     golden = load_golden(args.golden)
-    result = evaluate(golden, n=args.n, config=config, collection_name=args.collection)
+    result = evaluate(golden, n=args.n, config=config, collection_name=args.collection,
+                      rerank=args.rerank, hybrid=args.hybrid)
     if args.label:
         result["label"] = args.label
     print_report(result, label=args.label)

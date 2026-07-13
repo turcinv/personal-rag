@@ -206,14 +206,17 @@ Summary, ranked by impact/effort — do these in order, and build the eval set (
    (45 real queries, 30 vault + 15 resource) + `src/rag/eval.py` (recall@5/@10, MRR,
    per-corpus) via `make eval` / `make jetson-eval`. Baseline recorded in
    `tests/eval/baseline.json`.
-4. **Heading/section-aware chunking for books & resources** (`src/rag/extractors/
-   json_doc.py` — currently flat `chunk_text()` with no structure, unlike the vault
-   path which does `split_by_headings` first). Long structured PDFs (EU AI Act, NIST
-   AI RMF) get cut mid-section.
-5. **Add a cross-encoder rerank step** (`ms-marco-MiniLM-L-6-v2`, ~80 MB) in
-   `query.py`: retrieve top-20 dense, rerank to top-8. Fits the 8 GB Jetson budget
-   alongside the bi-encoder; directly compensates for dense search's weakness on
-   exact-match content (commands, config keys, error strings).
+4. **[DONE]** ~~Heading/section-aware chunking for books & resources.~~
+   `json_doc.py` now splits on `##`+ headings (`split_by_headings(min_level=2)` —
+   a lone `#` is code-comment noise in book PDFs) and packs each section on
+   paragraph/sentence boundaries via `chunking.chunk_paragraphs` (never mid-
+   sentence); the real heading replaces the old `part N`. Takes effect on the
+   next reindex (book/resource chunk IDs change → incremental re-embed + prune).
+5. **[DONE]** ~~Add a cross-encoder rerank step.~~ `query.py` `search()` retrieves
+   `rerank_fetch_k` (20) dense candidates and reorders to the top `n_results` with
+   `cross-encoder/ms-marco-MiniLM-L-6-v2`. **Default-on**; `rag-query --no-rerank`
+   / `make eval ARGS=--no-rerank` disables it. Query-time only, no reindex.
+   Config: `reranker_model`, `rerank_fetch_k`.
 6. **BM25/lexical hybrid path** — highest raw impact, highest effort (1-2 days,
    possibly a store change). Do last, after the eval set exists.
 7. **Expose `--tag`/`--status` filters in `query.py`** — tags are stored as a
