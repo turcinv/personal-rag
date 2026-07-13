@@ -127,7 +127,49 @@ def test_extract_json_maps_metadata(tmp_path):
     assert m["source"] == "pdf"
     assert m["confidence"] == "high"
     assert m["tags"] == "a, b"
-    assert m["heading"] == "part 1"
+    assert m["heading"] == ""  # no ##-heading structure → empty (was the "part N" placeholder)
+
+
+def test_extract_json_heading_aware_carries_real_headings(tmp_path):
+    """##+ headings split into sections carrying the real heading; a lone # (code
+    comment) must NOT create a section."""
+    body_a = "Alpha section body. " * 20
+    body_b = "Beta section body. " * 20
+    text = f"## Introduction\n{body_a}\n\n# not_a_heading_just_a_code_comment\n## Methods\n{body_b}"
+    p = tmp_path / "structured.json"
+    p.write_text(json.dumps({
+        "file_name": "structured.pdf", "title": "Structured", "resource_type": "book",
+        "text": text,
+    }), encoding="utf-8")
+    ids, docs, metas, err = extract_json_doc(p, 1200, 150)
+    assert err is None and docs
+    headings = {m["heading"] for m in metas}
+    assert "Introduction" in headings
+    assert "Methods" in headings
+    # the lone-# line is treated as body, never a heading
+    assert not any("code_comment" in h for h in headings)
+    # every chunk's own heading is stable, no "part N" placeholder
+    assert all(not m["heading"].startswith("part ") for m in metas)
+
+
+def test_extract_json_paragraph_fallback_no_midsentence(tmp_path):
+    """No ##-headings → whole doc packed on paragraph/sentence boundaries; chunks
+    end on sentence boundaries (no mid-sentence cut) and heading is empty."""
+    paras = [("This is sentence one of paragraph %d. It has several sentences. "
+              "Here is the third one to add length." % i) for i in range(40)]
+    text = "\n\n".join(paras)
+    p = tmp_path / "flat.json"
+    p.write_text(json.dumps({
+        "file_name": "flat.pdf", "title": "Flat", "resource_type": "resource",
+        "text": text,
+    }), encoding="utf-8")
+    ids, docs, metas, err = extract_json_doc(p, 500, 100)
+    assert err is None and len(docs) >= 2
+    assert all(m["heading"] == "" for m in metas)
+    # each chunk fits the budget and ends at a sentence boundary
+    for d in docs:
+        assert len(d) <= 500
+        assert d.rstrip().endswith((".", "!", "?"))
 
 
 def test_extract_json_short_text_skipped(tmp_path):

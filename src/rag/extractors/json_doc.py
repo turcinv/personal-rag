@@ -8,7 +8,7 @@ are idempotent — unlike live PDF parsing."""
 import json
 from pathlib import Path
 
-from ..chunking import chunk_text, stable_id
+from ..chunking import chunk_paragraphs, split_by_headings, stable_id
 
 
 def extract_json_doc(json_path: Path, max_chars: int, overlap: int):
@@ -37,9 +37,24 @@ def extract_json_doc(json_path: Path, max_chars: int, overlap: int):
         "wikilinks": "",
     }
 
+    # Structure-aware chunking. Real document structure only shows up as ##+
+    # Markdown headings in the pre-extracted text (a lone # is almost always a
+    # code comment in book PDFs, e.g. "# load the data" — see split_by_headings
+    # min_level). When ##+ headings exist, split into sections and carry the real
+    # heading; otherwise treat the whole doc as one section. Either way, chunk on
+    # paragraph/sentence boundaries so books are never cut mid-section/mid-word.
+    sections = split_by_headings(text, min_level=2)
+    structured = bool(sections) and not (len(sections) == 1 and sections[0][0] == "Document")
+    if not structured:
+        sections = [("", text)]
+
     ids, documents, metadatas = [], [], []
-    for chunk_index, chunk in enumerate(chunk_text(text, max_chars, overlap)):
-        ids.append(stable_id(file_name, chunk_index, chunk))
-        documents.append(chunk)
-        metadatas.append({**meta_base, "heading": f"part {chunk_index + 1}"})
+    for section_index, (heading, body) in enumerate(sections):
+        # "Document" is the sentinel for text before the first heading — not a
+        # real heading, so store it as empty.
+        section_heading = "" if heading == "Document" else heading
+        for chunk_index, chunk in enumerate(chunk_paragraphs(body, max_chars, overlap)):
+            ids.append(stable_id(file_name, section_index, chunk_index, chunk))
+            documents.append(chunk)
+            metadatas.append({**meta_base, "heading": section_heading})
     return ids, documents, metadatas, None

@@ -32,12 +32,24 @@ def strip_wikilink_syntax(text: str) -> str:
     return re.sub(r"\[\[([^\]]+)\]\]", r"\1", text)
 
 
-def split_by_headings(text: str):
+def split_by_headings(text: str, min_level: int = 1):
+    """Split text into (heading, body) sections at Markdown headings.
+
+    ``min_level`` is the minimum heading depth that counts as a section break.
+    The default (1) treats any line starting with ``#`` as a heading — correct
+    for hand-written vault notes. Pass ``min_level=2`` for pre-extracted book/
+    resource text, where a lone ``#`` is almost always a code comment (e.g.
+    ``# load the data``) rather than a real heading, and only ``##``+ lines mark
+    genuine document structure. Sections with an empty body are dropped."""
     sections = []
     current_heading = "Document"
     current_lines = []
     for line in text.splitlines():
-        if line.startswith("#"):
+        if min_level <= 1:
+            is_heading = line.startswith("#")
+        else:
+            is_heading = bool(re.match(r"#{%d,}\s" % min_level, line))
+        if is_heading:
             if current_lines:
                 sections.append((current_heading, "\n".join(current_lines).strip()))
                 current_lines = []
@@ -47,6 +59,59 @@ def split_by_headings(text: str):
     if current_lines:
         sections.append((current_heading, "\n".join(current_lines).strip()))
     return [(h, t) for h, t in sections if t.strip()]
+
+
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
+
+
+def chunk_paragraphs(text: str, max_chars: int, overlap: int):
+    """Chunk text on natural boundaries, packing whole paragraphs up to
+    ``max_chars``. A paragraph longer than ``max_chars`` is split on sentence
+    boundaries and its sentences packed; a single sentence longer than
+    ``max_chars`` falls back to the fixed char-window chunker (``overlap`` is
+    applied only in that last-resort case). Never splits mid-sentence otherwise —
+    the fix for flat char-window chunking cutting books mid-section/mid-word."""
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    buf = ""
+    for para in re.split(r"\n\s*\n", text):
+        para = para.strip()
+        if not para:
+            continue
+        if len(para) > max_chars:
+            if buf:
+                chunks.append(buf)
+                buf = ""
+            sent_buf = ""
+            for sent in _SENTENCE_BOUNDARY.split(para):
+                sent = sent.strip()
+                if not sent:
+                    continue
+                if len(sent) > max_chars:
+                    if sent_buf:
+                        chunks.append(sent_buf)
+                        sent_buf = ""
+                    chunks.extend(chunk_text(sent, max_chars, overlap))  # monster sentence
+                elif sent_buf and len(sent_buf) + 1 + len(sent) > max_chars:
+                    chunks.append(sent_buf)
+                    sent_buf = sent
+                else:
+                    sent_buf = f"{sent_buf} {sent}" if sent_buf else sent
+            if sent_buf:
+                chunks.append(sent_buf)
+        elif buf and len(buf) + 2 + len(para) > max_chars:
+            chunks.append(buf)
+            buf = para
+        else:
+            buf = f"{buf}\n\n{para}" if buf else para
+    if buf.strip():
+        chunks.append(buf.strip())
+    return chunks
 
 
 def chunk_text(text: str, max_chars: int, overlap: int):
