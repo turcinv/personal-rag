@@ -13,3 +13,5 @@ __pycache__/
 /*.md
 !README.md
 !CLAUDE.md
+!AGENTS.md
+!SKILLS.md

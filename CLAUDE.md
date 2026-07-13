@@ -155,7 +155,8 @@ personal-rag/
 ## Adding new books (end-to-end)
 
 ```bash
-# 1. Drop the PDF/EPUB into the Books or Resources Google Drive folder
+# 1. Drop the PDF/EPUB into ~/Documents/personal_knowledge/Books/ or Resources/ (local disk —
+#    GCS/Google Drive are no longer used as of 2026-07; disk is the single source of truth)
 # 2. Add the classification record to Resources/_catalog/resource_inventory.jsonl
 # 3. Run the extraction pipeline
 make extract        # extract text
@@ -168,6 +169,41 @@ make link-mocs      # update MOC backlinks
 # 4. Reindex into ChromaDB
 make index          # or: make jetson-index if running on Jetson
 ```
+
+## Known Limitations & Improvement Roadmap (RAG quality review, 2026-07-13)
+
+Independent review of retrieval quality (not code style) found the indexing pipeline
+solid but the retrieval layer under-designed for this corpus. Full findings in
+`Templates/RAG Quality Review Report.md` in the vault repo (Career Knowledge Base).
+Summary, ranked by impact/effort — do these in order, and build the eval set (item 3)
+*before* items 4-5 so changes can actually be measured:
+
+1. **Drop the triple L2/cosine/dot collection scheme** (`jetson-index-all`, `compare.py`,
+   `Makefile:239-256`). All embeddings are normalized, so cosine/dot/L2 produce
+   mathematically identical rankings — indexing 3x wastes ~2/3 of Jetson build time
+   and storage for zero quality gain. Keep one cosine collection.
+2. **Swap `all-MiniLM-L6-v2` for `bge-small-en-v1.5` or `gte-small`** — same 384-dim /
+   similar footprint, meaningfully better retrieval, no multilingual need (vault is
+   effectively all-English). Simultaneously shrink `chunk_max_chars` from 1200 to
+   ~1000 — at 1200 chars the model's 256-token cap silently truncates ~20% of every
+   chunk today.
+3. **Build a small labeled eval set + recall@k** (30-50 real queries -> expected
+   note(s)) before changing retrieval further — `tests/test_queries.py` only checks
+   "returned something plausible," not whether the right note ranked first.
+4. **Heading/section-aware chunking for books & resources** (`src/rag/extractors/
+   json_doc.py` — currently flat `chunk_text()` with no structure, unlike the vault
+   path which does `split_by_headings` first). Long structured PDFs (EU AI Act, NIST
+   AI RMF) get cut mid-section.
+5. **Add a cross-encoder rerank step** (`ms-marco-MiniLM-L-6-v2`, ~80 MB) in
+   `query.py`: retrieve top-20 dense, rerank to top-8. Fits the 8 GB Jetson budget
+   alongside the bi-encoder; directly compensates for dense search's weakness on
+   exact-match content (commands, config keys, error strings).
+6. **BM25/lexical hybrid path** — highest raw impact, highest effort (1-2 days,
+   possibly a store change). Do last, after the eval set exists.
+7. **Expose `--tag`/`--status` filters in `query.py`** — tags are stored as a
+   comma-joined string (Chroma 0.6.3 has weak array support) so real tag filtering
+   needs a substring post-filter, not a native `$eq`; currently unexposed entirely
+   despite the vault's curated tag vocabulary being a strong precision signal.
 
 ## Deeper reference
 
