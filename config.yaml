@@ -4,7 +4,12 @@
 vault_path: '/Users/turcinv/Documents/personal_knowledge/Career Knowledge Base/'
 index_path: "./chroma_db"
 log_path: "./logs/rag.log"   # app log file (rotating); override with RAG_LOG_PATH (set in Docker)
-collection_name: "obsidian_markdown"
+# Collection name encodes the embedding model. Chunk IDs are sha256 of the chunk
+# TEXT, not the embedding (see chunking.stable_id), so re-embedding a new model
+# into the same collection would keep the old vectors under unchanged IDs — a
+# fresh model needs a fresh collection. Bump this suffix whenever embedding_model
+# changes. (Prior: "obsidian_markdown" for all-MiniLM-L6-v2.)
+collection_name: "obsidian_markdown_bge_small"
 
 include_extensions:
   - ".md"
@@ -35,9 +40,14 @@ exclude_files:
 exclude_filename_patterns:
   - "* MOC.md"
 
-chunk_max_chars: 1200
+chunk_max_chars: 1000      # ~250 tokens — fits bge-small-en-v1.5's 512-token cap with
+                           # headroom (1200 chars/~300 tokens truncated ~20% of every chunk)
 chunk_overlap_chars: 150
-embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+embedding_model: "BAAI/bge-small-en-v1.5"
+# bge retrieval expects a short instruction on the QUERY side only (not on indexed
+# passages). Applied in query.py's search()/CLI via the query_instruction hook;
+# leave empty for models that need no prefix (all-MiniLM, gte-small).
+query_instruction: "Represent this sentence for searching relevant passages: "
 embedding_batch_size: 16   # chunks per embed call — keep small on Jetson (8 GB unified RAM)
 markdown_workers: 1        # threads for parallel MD extraction (I/O bound); 1 = sequential
 pdf_workers: 1             # threads for parallel PDF extraction; keep at 1 on Jetson

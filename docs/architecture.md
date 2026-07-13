@@ -9,10 +9,10 @@ Pre-extracted JSON     ─┘         │
                                    │  one file at a time (streaming)
                                    ▼
                         Chunk by heading + character count
-                        (1200 chars max, 150 overlap)
+                        (1000 chars max, 150 overlap)
                                    │
                                    ▼
-                        Embed with all-MiniLM-L6-v2
+                        Embed with BAAI/bge-small-en-v1.5
                         (single-process; CUDA on Jetson/GPU, CPU fallback)
                                    │
                                    ▼
@@ -76,6 +76,14 @@ The collection is opened with `get_or_create_collection` — never wiped. Each r
 
 Re-running on an unchanged vault embeds nothing. Editing only a note's frontmatter/heading updates metadata with no re-embedding. Changing `chunk_max_chars`/`chunk_overlap_chars` changes every chunk's text and therefore every ID, so the next run re-embeds everything and prunes the old chunks — effectively a clean rebuild.
 
+### Changing the embedding model → new collection name (required)
+
+Chunk IDs hash the chunk **text**, not the embedding vector. Swapping `embedding_model` does **not** change any chunk's text, so the incremental engine would see the existing IDs and *skip* re-embedding — silently leaving the old model's vectors in place under those IDs. Combined with a `chunk_max_chars` change (which re-IDs only chunks long enough to be split — short notes are returned whole and keep their ID), the same collection would end up with a **mix** of old- and new-model vectors, which are not comparable.
+
+The safe path, therefore, is a **new collection name that encodes the model**, set in `config.yaml`'s `collection_name`. A fresh (empty) collection has no existing IDs, so every chunk embeds from scratch with the new model; the old collection is left intact for rollback and can be deleted manually once the new one is validated. Convention: suffix the model, e.g. `obsidian_markdown_bge_small` for `BAAI/bge-small-en-v1.5` (was `obsidian_markdown` for `all-MiniLM-L6-v2`). Bump the suffix on every model change. (A documented full wipe-and-rebuild of the same collection would also work, but versioning the name is safer — it never risks a half-migrated collection and keeps the old vectors available to compare against.)
+
+Query-side model prefixes: some retrieval models expect a short instruction prepended to the **query** (not to indexed passages). bge-small-en-v1.5 uses `"Represent this sentence for searching relevant passages: "`. This is applied via `config.yaml`'s `query_instruction`, prepended in `query.py`'s `search()`; leave it empty for models that need no prefix (all-MiniLM, gte-small). The index/passage side never prefixes.
+
 ## Query (`src/rag/query.py`)
 
 1. Embeds the query string with the same model (CPU, no device selection needed for single inference)
@@ -100,7 +108,9 @@ Re-running on an unchanged vault embeds nothing. Editing only a note's frontmatt
 
 ## ChromaDB state
 
-- Collection: `obsidian_markdown`
+- Collection: `obsidian_markdown_bge_small` (embedding model `BAAI/bge-small-en-v1.5`;
+  the name encodes the model — see "Changing the embedding model" above. Prior
+  collection `obsidian_markdown` used `all-MiniLM-L6-v2`.)
 - ~7,600 MD chunks + PDF chunks from 175 books and 35 resources (as of 2026-06-04)
 - `source: pdf` distinguishes PDF chunks from Markdown chunks
 

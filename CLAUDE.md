@@ -140,7 +140,11 @@ personal-rag/
 
 ## ChromaDB state
 
-- Collection: `obsidian_markdown`
+- Collection: `obsidian_markdown_bge_small` (model `BAAI/bge-small-en-v1.5`). The
+  name encodes the model: chunk IDs hash chunk *text*, not the embedding, so a
+  model swap must use a fresh collection or old vectors silently survive. Prior:
+  `obsidian_markdown` (`all-MiniLM-L6-v2`). See docs/architecture.md → "Changing
+  the embedding model".
 - Metadata fields: `path`, `title`, `heading`, `type`, `domain`, `status`, `source`, `confidence`, `tags`, `wikilinks`
 - Reindexing is incremental: chunk IDs are SHA-256 of the full chunk content, so unchanged chunks are skipped, changed/new ones embedded, and stale chunks (edited or deleted sources) pruned. The collection is never wiped. **Note:** the nav-tail/wikilink stripping changed chunk text, so the first run after those changes re-embeds the vault and prunes the old chunks (expected one-time churn).
 
@@ -185,14 +189,20 @@ Summary, ranked by impact/effort — do these in order, and build the eval set (
    of Jetson build time/storage for zero quality gain. The indexer now always creates
    collections with `hnsw:space: cosine` (Chroma ignores this on a pre-existing
    collection, so no rebuild was triggered). One collection: `obsidian_markdown`.
-2. **Swap `all-MiniLM-L6-v2` for `bge-small-en-v1.5` or `gte-small`** — same 384-dim /
-   similar footprint, meaningfully better retrieval, no multilingual need (vault is
-   effectively all-English). Simultaneously shrink `chunk_max_chars` from 1200 to
-   ~1000 — at 1200 chars the model's 256-token cap silently truncates ~20% of every
-   chunk today.
-3. **Build a small labeled eval set + recall@k** (30-50 real queries -> expected
-   note(s)) before changing retrieval further — `tests/test_queries.py` only checks
-   "returned something plausible," not whether the right note ranked first.
+2. **[DONE, code]** ~~Swap `all-MiniLM-L6-v2` for `bge-small-en-v1.5`.~~ Switched
+   `embedding_model` to `BAAI/bge-small-en-v1.5` (same 384-dim footprint) and
+   `chunk_max_chars` 1200 → 1000 (at 1200 chars/~300 tokens the old 256-token cap
+   truncated ~20% of every chunk; bge's 512-token cap fits 1000 chars with
+   headroom). bge's query-side prefix (`query_instruction` in config, applied in
+   `query.py` `search()`; passages never prefixed). Model swap uses a **fresh
+   collection** `obsidian_markdown_bge_small` — chunk IDs hash text not vectors, so
+   reusing the old collection would keep MiniLM vectors under unchanged IDs. Code
+   landed; **awaiting the Jetson re-embed + `make jetson-eval` to confirm the
+   measured recall/MRR delta vs `tests/eval/baseline.json`.**
+3. **[DONE]** ~~Build a small labeled eval set + recall@k.~~ `tests/eval/golden_queries.jsonl`
+   (45 real queries, 30 vault + 15 resource) + `src/rag/eval.py` (recall@5/@10, MRR,
+   per-corpus) via `make eval` / `make jetson-eval`. Baseline recorded in
+   `tests/eval/baseline.json`.
 4. **Heading/section-aware chunking for books & resources** (`src/rag/extractors/
    json_doc.py` — currently flat `chunk_text()` with no structure, unlike the vault
    path which does `split_by_headings` first). Long structured PDFs (EU AI Act, NIST
