@@ -42,7 +42,7 @@ make sync-to-jetson JETSON_HOST=turcinv@<host>   # rsync extraction outputs to t
 ```
 
 Jetson-side (run ON the Jetson, not from macOS — aarch64 PyTorch wheels won't build
-on x86): `make build-jetson`, `make jetson-index-all`, `make jetson-query Q="..."`.
+on x86): `make build-jetson`, `make jetson-index`, `make jetson-query Q="..."`.
 Requires a `.env` in this directory with `RAG_VAULT_PATH` and `RAG_JSON_PATH` set to
 real paths on the Jetson — if those are unset, `docker-compose.jetson.yml` silently
 falls back to mounting `/tmp` (empty), and the indexer will report 0 files from
@@ -82,9 +82,9 @@ JetPack 6.2 ships 3.10, not 3.12 — do not use 3.11+-only syntax).
   `markdown_workers`, `pdf_workers` small (see `docs/jetson.md`); don't use
   `encode_multi_process` on Jetson (NvSCI IPC, not CUDA IPC — it fails).
 - See `CLAUDE.md` → "Known Limitations & Improvement Roadmap" for known retrieval-
-  quality gaps (dated embedding model, no reranking/hybrid search, wasteful
-  triple-collection indexing) before assuming the current retrieval design is the
-  intended end state.
+  quality gaps (dated embedding model, no reranking/hybrid search) before assuming
+  the current retrieval design is the intended end state. (The wasteful triple-
+  collection indexing is now removed — item 1 is done.)
 
 ## PR / commit conventions
 

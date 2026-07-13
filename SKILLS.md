@@ -64,7 +64,7 @@ make sync-to-jetson JETSON_HOST=turcinv@<jetson-tailscale-host>
 # check the indexer's startup log for non-zero file counts before letting it run
 # to completion):
 make build-jetson      # first time only, ~1.5 GB PyTorch layer, cached after
-make jetson-index-all  # or make jetson-index for the single default collection
+make jetson-index      # build/update the ChromaDB collection
 ```
 
 **Danger:** if the indexer runs with all sources reporting 0 files (misconfigured

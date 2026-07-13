@@ -28,7 +28,6 @@ dev = ["pytest>=8"]
 rag-index = "rag.indexer:main"
 rag-query = "rag.query:main"
 rag-pipeline-status = "rag.pipeline_status:main"
-rag-compare = "rag.compare:main"
 rag-extract = "extractor.extract_text:main"
 rag-analyze = "extractor.analyze_files:main"
 rag-enrich = "extractor.enrich_metadata:main"

@@ -178,10 +178,13 @@ solid but the retrieval layer under-designed for this corpus. Full findings in
 Summary, ranked by impact/effort — do these in order, and build the eval set (item 3)
 *before* items 4-5 so changes can actually be measured:
 
-1. **Drop the triple L2/cosine/dot collection scheme** (`jetson-index-all`, `compare.py`,
-   `Makefile:239-256`). All embeddings are normalized, so cosine/dot/L2 produce
-   mathematically identical rankings — indexing 3x wastes ~2/3 of Jetson build time
-   and storage for zero quality gain. Keep one cosine collection.
+1. **[DONE]** ~~Drop the triple L2/cosine/dot collection scheme.~~ Removed
+   `compare.py` / `rag-compare`, the `--metric` indexer flag, and the
+   `jetson-index-{all,cos,dot}` / `jetson-compare` Makefile targets. All embeddings
+   are normalized, so cosine/dot/L2 rank identically — the triple scheme wasted ~2/3
+   of Jetson build time/storage for zero quality gain. The indexer now always creates
+   collections with `hnsw:space: cosine` (Chroma ignores this on a pre-existing
+   collection, so no rebuild was triggered). One collection: `obsidian_markdown`.
 2. **Swap `all-MiniLM-L6-v2` for `bge-small-en-v1.5` or `gte-small`** — same 384-dim /
    similar footprint, meaningfully better retrieval, no multilingual need (vault is
    effectively all-English). Simultaneously shrink `chunk_max_chars` from 1200 to
