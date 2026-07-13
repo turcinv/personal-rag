@@ -49,6 +49,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip "setuptools<82" wheel \
 
 COPY src/ ./src/
 COPY tests/ ./tests/
+COPY scripts/ ./scripts/
 COPY config.yaml .env.example ./
 
 ENV HF_HOME=/data/hf-cache
