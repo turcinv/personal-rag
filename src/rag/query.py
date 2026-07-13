@@ -50,15 +50,19 @@ def get_model(model_name):
     return _MODEL_CACHE[model_name]
 
 
-def open_collection(config, collection_name=None):
-    """Open the persistent ChromaDB collection named in config (or the override)."""
+def get_client(config):
+    """Open the persistent ChromaDB client at the configured index path."""
     index_path = config.get("index_path", "./chroma_db")
-    name = collection_name or config.get("collection_name", "obsidian_markdown")
-    client = chromadb.PersistentClient(
+    return chromadb.PersistentClient(
         path=index_path,
         settings=chromadb.Settings(anonymized_telemetry=False),
     )
-    return client.get_collection(name)
+
+
+def open_collection(config, collection_name=None):
+    """Open the persistent ChromaDB collection named in config (or the override)."""
+    name = collection_name or config.get("collection_name", "obsidian_markdown")
+    return get_client(config).get_collection(name)
 
 
 def search(

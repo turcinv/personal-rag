@@ -140,12 +140,12 @@ personal-rag/
 
 ## ChromaDB state
 
-- Collection: `obsidian_markdown_gte_small` (model `thenlper/gte-small`). The
+- Collection: `obsidian_markdown` (model `all-MiniLM-L6-v2`, 143,555 chunks). The
   name encodes the model: chunk IDs hash chunk *text*, not the embedding, so a
-  model swap must use a fresh collection or old vectors silently survive. Prior:
-  `obsidian_markdown` (`all-MiniLM-L6-v2`); `obsidian_markdown_bge_small`
-  (`bge-small-en-v1.5`, net-regressed vault recall, not shipped). See
-  docs/architecture.md → "Changing the embedding model".
+  model swap must use a fresh collection or old vectors silently survive.
+  `obsidian_markdown_bge_small` (`bge-small-en-v1.5`) and `obsidian_markdown_gte_small`
+  (`thenlper/gte-small`) were both trialled and rejected (net regression vs MiniLM).
+  See docs/architecture.md → "Changing the embedding model".
 - Metadata fields: `path`, `title`, `heading`, `type`, `domain`, `status`, `source`, `confidence`, `tags`, `wikilinks`
 - Reindexing is incremental: chunk IDs are SHA-256 of the full chunk content, so unchanged chunks are skipped, changed/new ones embedded, and stale chunks (edited or deleted sources) pruned. The collection is never wiped. **Note:** the nav-tail/wikilink stripping changed chunk text, so the first run after those changes re-embeds the vault and prunes the old chunks (expected one-time churn).
 
@@ -190,18 +190,18 @@ Summary, ranked by impact/effort — do these in order, and build the eval set (
    of Jetson build time/storage for zero quality gain. The indexer now always creates
    collections with `hnsw:space: cosine` (Chroma ignores this on a pre-existing
    collection, so no rebuild was triggered). One collection: `obsidian_markdown`.
-2. **[IN PROGRESS]** Swap `all-MiniLM-L6-v2` for a better 384-dim model + drop
-   `chunk_max_chars` 1200 → 1000 (old 256-token cap truncated ~20% of every chunk).
-   - **bge-small-en-v1.5: tried, rejected.** `obsidian_markdown_bge_small`,
-     query-prefix verified correct (query-side only, fires, eval shares the path).
-     Net **regressed** vs MiniLM baseline: overall recall@5 0.956→0.867, MRR
-     0.814→0.782; vault recall@5 0.933→0.80 (resource MRR improved). See
-     `tests/eval/bge_small.json`. Not shipped.
-   - **gte-small: current candidate.** `embedding_model: thenlper/gte-small`,
-     collection `obsidian_markdown_gte_small`, no query prefix needed
-     (`query_instruction: ""`). Code landed; **awaiting the Jetson re-embed +
-     `make jetson-eval` to compare vs `baseline.json` and `bge_small.json`.**
-     If gte-small also fails to beat MiniLM, keep MiniLM.
+2. **[DONE — MiniLM kept; both alternatives rejected]** Tried swapping
+   `all-MiniLM-L6-v2` for a stronger 384-dim model (+ `chunk_max_chars` 1200 → 1000).
+   Both candidates **net-regressed** vs the MiniLM baseline on this corpus (they
+   helped resource queries but hurt the short vault-title queries that dominate):
+   - **bge-small-en-v1.5** (`tests/eval/bge_small.json`): overall recall@5
+     0.956→0.867, MRR 0.814→0.782; vault recall@5 0.933→0.80. Query-prefix
+     implementation audited and confirmed correct (query-side only, fires, eval
+     shares the path) — the regression is the model, not a bug.
+   - **gte-small** (`tests/eval/gte_small.json`): also a net regression (no prefix
+     needed, so not a prefix issue either).
+   Reverted `config.yaml` to `all-MiniLM-L6-v2` / `obsidian_markdown` / chunk 1200.
+   The trial collections should be dropped on the Jetson (see `scripts/drop_collections.py`).
 3. **[DONE]** ~~Build a small labeled eval set + recall@k.~~ `tests/eval/golden_queries.jsonl`
    (45 real queries, 30 vault + 15 resource) + `src/rag/eval.py` (recall@5/@10, MRR,
    per-corpus) via `make eval` / `make jetson-eval`. Baseline recorded in

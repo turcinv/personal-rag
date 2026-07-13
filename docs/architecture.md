@@ -9,10 +9,10 @@ Pre-extracted JSON     ─┘         │
                                    │  one file at a time (streaming)
                                    ▼
                         Chunk by heading + character count
-                        (1000 chars max, 150 overlap)
+                        (1200 chars max, 150 overlap)
                                    │
                                    ▼
-                        Embed with thenlper/gte-small
+                        Embed with all-MiniLM-L6-v2
                         (single-process; CUDA on Jetson/GPU, CPU fallback)
                                    │
                                    ▼
@@ -80,9 +80,9 @@ Re-running on an unchanged vault embeds nothing. Editing only a note's frontmatt
 
 Chunk IDs hash the chunk **text**, not the embedding vector. Swapping `embedding_model` does **not** change any chunk's text, so the incremental engine would see the existing IDs and *skip* re-embedding — silently leaving the old model's vectors in place under those IDs. Combined with a `chunk_max_chars` change (which re-IDs only chunks long enough to be split — short notes are returned whole and keep their ID), the same collection would end up with a **mix** of old- and new-model vectors, which are not comparable.
 
-The safe path, therefore, is a **new collection name that encodes the model**, set in `config.yaml`'s `collection_name`. A fresh (empty) collection has no existing IDs, so every chunk embeds from scratch with the new model; the old collection is left intact for rollback and can be deleted manually once the new one is validated. Convention: suffix the model, e.g. `obsidian_markdown_gte_small` for `thenlper/gte-small`. Bump the suffix on every model change. (A documented full wipe-and-rebuild of the same collection would also work, but versioning the name is safer — it never risks a half-migrated collection and keeps the old vectors available to compare against.)
+The safe path, therefore, is a **new collection name that encodes the model**, set in `config.yaml`'s `collection_name`. A fresh (empty) collection has no existing IDs, so every chunk embeds from scratch with the new model; the old collection is left intact for rollback and can be deleted manually once the new one is validated. Convention: suffix the model, e.g. `obsidian_markdown_bge_small` for `BAAI/bge-small-en-v1.5`. Bump the suffix on every model change. (A documented full wipe-and-rebuild of the same collection would also work, but versioning the name is safer — it never risks a half-migrated collection and keeps the old vectors available to compare against.)
 
-Model history on this corpus (measured with the recall@k harness, `tests/eval/`): `obsidian_markdown` = `all-MiniLM-L6-v2` (baseline); `obsidian_markdown_bge_small` = `BAAI/bge-small-en-v1.5` (net-regressed vault recall despite a correct query prefix — not shipped); `obsidian_markdown_gte_small` = `thenlper/gte-small` (current candidate).
+Model history on this corpus (measured with the recall@k harness, `tests/eval/`): `obsidian_markdown` = `all-MiniLM-L6-v2` — **the shipped default**; `obsidian_markdown_bge_small` = `BAAI/bge-small-en-v1.5` and `obsidian_markdown_gte_small` = `thenlper/gte-small` were both tried and both **net-regressed** vs MiniLM (bge/gte helped resources but hurt the short vault-title queries that dominate the corpus) — not shipped. The prefix implementation was audited and confirmed correct, so the regression is the models themselves on this corpus, not a bug. MiniLM kept.
 
 Query-side model prefixes: some retrieval models expect a short instruction prepended to the **query** (not to indexed passages) — bge-small-en-v1.5 used `"Represent this sentence for searching relevant passages: "`. This is applied via `config.yaml`'s `query_instruction`, prepended in `query.py`'s `search()`; it is **empty** for models that need no prefix (all-MiniLM, gte-small). The index/passage side never prefixes.
 
@@ -110,10 +110,9 @@ Query-side model prefixes: some retrieval models expect a short instruction prep
 
 ## ChromaDB state
 
-- Collection: `obsidian_markdown_gte_small` (embedding model `thenlper/gte-small`;
-  the name encodes the model — see "Changing the embedding model" above. Prior:
-  `obsidian_markdown` = `all-MiniLM-L6-v2`; `obsidian_markdown_bge_small` =
-  `bge-small-en-v1.5`, not shipped.)
+- Collection: `obsidian_markdown` (embedding model `all-MiniLM-L6-v2`; 143,555
+  chunks). bge-small-en-v1.5 and gte-small were trialled in their own collections
+  and rejected (net regression) — see "Changing the embedding model" above.
 - ~7,600 MD chunks + PDF chunks from 175 books and 35 resources (as of 2026-06-04)
 - `source: pdf` distinguishes PDF chunks from Markdown chunks
 
