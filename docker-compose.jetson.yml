@@ -22,6 +22,7 @@ services:
       - chroma:/data/chroma
       - hf-cache:/data/hf-cache
       - ./logs:/data/logs                          # app logs, readable on the host
+      - ./tests/eval:/app/tests/eval               # persist eval output (make jetson-eval --out) to the host
       - ${RAG_VAULT_PATH:-/tmp}:/vault:ro
       - ${RAG_PDF_BOOKS_PATH:-/tmp}:/books:ro
       - ${RAG_PDF_RESOURCES_PATH:-/tmp}:/resources:ro
