@@ -83,11 +83,32 @@ def main():
     seen_ids = set()
     log(f"Existing chunks in index: {len(existing_ids)}")
 
+    # Materialize sources up front so we can total up file counts across all of
+    # them *before* embedding/pruning anything. If every source reports 0 files
+    # while the index is non-empty, that's almost certainly a broken mount or a
+    # misconfigured path (e.g. a missing env var silently falling back to an
+    # empty dir) — not a real mass deletion. Abort instead of pruning the whole
+    # collection. See incident 2026-07-15: a missing RAG_VAULT_PATH/RAG_JSON_PATH
+    # in .env caused every source to resolve to an empty /tmp mount and wiped
+    # 172k+ chunks in one run.
+    sources = list(iter_sources(config, vault_path, max_chars, overlap))
+    total_files_seen = sum(len(source.files) for source in sources)
+    log(f"Total source files found: {total_files_seen}")
+    if total_files_seen == 0 and existing_ids:
+        raise RuntimeError(
+            f"Every source (markdown/PDF/JSON) reported 0 files, but the index "
+            f"already holds {len(existing_ids)} chunks. Refusing to prune — this "
+            f"looks like a broken mount or misconfigured path, not a real deletion. "
+            f"Check vault_path/pdf_sources/json_sources in config.yaml and any "
+            f"RAG_VAULT_PATH/RAG_PDF_BOOKS_PATH/RAG_PDF_RESOURCES_PATH/RAG_JSON_PATH "
+            f"env overrides before re-running."
+        )
+
     total_chunks = 0     # chunks across successfully-extracted files this run
     total_new = 0        # chunks embedded this run
     total_updated = 0    # chunks whose metadata was refreshed (no re-embed)
 
-    for source in iter_sources(config, vault_path, max_chars, overlap):
+    for source in sources:
         s_total, s_new, s_upd = run_source(
             source, existing_meta, seen_ids, model, device, embed_batch, collection,
         )
