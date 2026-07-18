@@ -1,4 +1,5 @@
 .PHONY: help install index query eval pipeline-status sync-to-jetson test test-unit build build-jetson \
+        serve docker-serve jetson-serve \
         docker-index docker-query docker-test \
         jetson-pipeline-status jetson-full-pipeline \
         jetson-index jetson-query jetson-eval jetson-test \
@@ -31,6 +32,7 @@ help:
 	@echo "  make query Q=\"...\"        semantic query"
 	@echo "  make pipeline-status      check all extraction pipeline outputs"
 	@echo "  make eval [ARGS=...]      recall@k / MRR eval over golden_queries.jsonl"
+	@echo "  make serve                run the HTTP API locally (rag-serve, port 8000)"
 	@echo "  make sync-to-jetson       rsync all extraction outputs to Jetson (set JETSON_HOST)"
 	@echo "  make test-unit            offline pytest unit suite"
 	@echo "  make test [K=keyword]     retrieval smoke tests (needs an index)"
@@ -51,6 +53,7 @@ help:
 	@echo "Docker x86:"
 	@echo "  make build                build personal-rag:latest"
 	@echo "  make docker-index / docker-query Q=\"...\""
+	@echo "  make docker-serve         run the HTTP API container (port 8000)"
 	@echo "  make docker-extract / docker-enrich / docker-build-index ..."
 	@echo ""
 	@echo "Docker Jetson (run on Jetson):"
@@ -60,6 +63,7 @@ help:
 	@echo "  make jetson-index               reindex into the ChromaDB collection"
 	@echo "  make jetson-query Q=\"...\"       semantic query"
 	@echo "  make jetson-eval [ARGS=...]     recall@k / MRR eval over golden_queries.jsonl"
+	@echo "  make jetson-serve               run the HTTP API container (port 8000)"
 	@echo "  make jetson-extract / jetson-enrich / jetson-build-index ..."
 	@echo ""
 
@@ -86,6 +90,11 @@ pipeline-status:
 # A/B a variant:      make eval ARGS="--label dense --no-rerank"
 eval:
 	$(PYTHON) scripts/eval_recall.py $(ARGS)
+
+# Run the HTTP API locally. Reads RAG_API_HOST/RAG_API_PORT/RAG_API_JWT_SECRET
+# from the environment / .env. Loads model + collection + reranker once.
+serve:
+	.venv/bin/rag-serve
 
 # Sync all extraction outputs (text_output_*, indexed/, resources.db) from macOS → Jetson.
 # Set JETSON_HOST in .env or pass on the command line: make sync-to-jetson JETSON_HOST=gpu-01
@@ -187,6 +196,10 @@ docker-query:
 docker-test:
 	docker compose run --rm rag python tests/test_queries.py $(K)
 
+# Long-running HTTP API server (port 8000). Set RAG_API_JWT_SECRET in .env.
+docker-serve:
+	docker compose up api
+
 docker-extract:
 	docker compose run --rm rag rag-extract /books
 	docker compose run --rm rag rag-extract /resources
@@ -260,6 +273,10 @@ jetson-query:
 
 jetson-eval:
 	docker compose -f docker-compose.jetson.yml run --rm rag python -m rag.eval $(ARGS)
+
+# Long-running HTTP API server (port 8000). Set RAG_API_JWT_SECRET in .env.
+jetson-serve:
+	docker compose -f docker-compose.jetson.yml up api
 
 jetson-test:
 	docker compose -f docker-compose.jetson.yml run --rm rag python tests/test_queries.py $(K)
