@@ -387,8 +387,9 @@ class FakeProc:
     ``release()`` — deterministic, no sleeps.
     """
 
-    def __init__(self, returncode: int, release_immediately: bool):
+    def __init__(self, returncode: int, release_immediately: bool, exc: Exception | None = None):
         self._returncode = returncode
+        self._exc = exc
         self._event = threading.Event()
         if release_immediately:
             self._event.set()
@@ -397,6 +398,8 @@ class FakeProc:
 
     def wait(self) -> int:
         self._event.wait()
+        if self._exc is not None:
+            raise self._exc
         self.returncode = self._returncode
         return self._returncode
 
@@ -409,14 +412,18 @@ class _IndexerControl:
     and inspect the fake processes that were spawned."""
 
     def __init__(self):
-        self._cfg = {"returncode": 0, "block": False, "log_line": None}
+        self._cfg = {"returncode": 0, "block": False, "log_line": None, "exc": None}
         self.procs: list[FakeProc] = []
 
     def configure(self, **kw):
         self._cfg.update(kw)
 
     def _spawn(self, log_path):
-        proc = FakeProc(self._cfg["returncode"], release_immediately=not self._cfg["block"])
+        proc = FakeProc(
+            self._cfg["returncode"],
+            release_immediately=not self._cfg["block"],
+            exc=self._cfg["exc"],
+        )
         if self._cfg["log_line"] is not None:
             Path(log_path).write_text(self._cfg["log_line"], encoding="utf-8")
         proc.log_path = str(log_path)
@@ -535,3 +542,53 @@ def test_index_start_requires_auth_no_spawn(client, jwt_secret, indexer):
 def test_index_job_status_requires_auth(client, jwt_secret, indexer):
     assert client.get("/index/jobs/whatever").status_code == 401
     assert client.get("/index/jobs/whatever", headers=_auth("garbage")).status_code == 401
+
+
+# ── jobs.py robustness regressions (commit 32a9a3a) ─────────────────────────────
+
+
+def test_index_monitor_crash_fails_job_and_unblocks(client, jwt_secret, indexer):
+    """Regression: a crashing monitor (proc.wait() raises) must NOT leave the job
+    stuck 'running' — that would 409 every future reindex forever. It must
+    force-transition to 'failed', and a subsequent POST must be allowed again."""
+    indexer.configure(exc=RuntimeError("boom in wait"), block=False)
+    jid = client.post("/index", headers=_auth(_mint())).json()["job_id"]
+    jobs.manager.join(jid, timeout=2.0)
+
+    resp = client.get(f"/index/jobs/{jid}", headers=_auth(_mint()))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "failed"          # NOT stuck at "running"
+    assert body["finished"]                     # finish timestamp recorded
+    assert body["error"] and "monitor crashed" in body["error"]
+
+    # Recovery: the concurrency guard is no longer locked at 409.
+    indexer.configure(exc=None, block=False)
+    r2 = client.post("/index", headers=_auth(_mint()))
+    assert r2.status_code == 202
+    assert r2.json()["job_id"] != jid
+
+
+def test_index_failed_error_is_single_trimmed_line(client, jwt_secret, indexer):
+    """Regression: the HTTP error is the LAST non-empty log line (≤300 chars),
+    not the raw multi-line tail — so tracebacks and container paths don't leak."""
+    multiline_log = (
+        "Traceback (most recent call last):\n"
+        '  File "/app/src/rag/indexer.py", line 98, in main\n'
+        "    raise RuntimeError(...)\n"
+        "RuntimeError: Every source reported 0 files while the index holds chunks. "
+        "Refusing to prune the entire collection\n"
+    )
+    indexer.configure(returncode=1, block=False, log_line=multiline_log)
+    jid = client.post("/index", headers=_auth(_mint())).json()["job_id"]
+    jobs.manager.join(jid, timeout=2.0)
+
+    body = client.get(f"/index/jobs/{jid}", headers=_auth(_mint())).json()
+    assert body["status"] == "failed"
+    err = body["error"]
+    assert "Every source reported 0 files" in err  # (i) the RuntimeError reason
+    assert "Refusing to prune" in err
+    assert "\n" not in err                          # (ii) single line
+    assert "/app/" not in err                        # (iii) no container path
+    assert "Traceback" not in err                    #      no traceback header
+    assert len(err) <= 300                            # (iv) capped
