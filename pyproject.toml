@@ -19,6 +19,9 @@ dependencies = [
     "PyMuPDF>=1.24",
     "posthog==7.17.0",
     "python-dotenv==1.2.2",
+    "fastapi==0.136.3",
+    "uvicorn[standard]==0.49.0",
+    "pyjwt==2.13.0",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +42,7 @@ rag-build-vault-index = "extractor.build_vault_index:main"
 rag-dup-detect = "extractor.dup_detect:main"
 rag-link-mocs = "extractor.link_mocs:main"
 rag-search = "extractor.search:main"
+rag-serve = "rag.api.app:run"
 
 [tool.setuptools.packages.find]
 where = ["src"]
