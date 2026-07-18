@@ -7,7 +7,7 @@ tools: Read, Write, Edit, Grep, Glob
 You document the backend API after it's built. You edit docs and the Makefile only —
 never application code, never tests.
 
-## Deliverables (see BACKEND_API_PLAN.md Phase 7)
+## Deliverables (see docs/BACKEND_API_PLAN.md Phase 7)
 
 - **`docs/api.md`** (new): every endpoint (`/query`, `/health`, `/status`, `/index`,
   `/index/jobs/{id}`), request/response schemas, the JWT auth flow, how to mint a

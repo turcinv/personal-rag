@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Reviews the personal-rag backend API branch before the PR — correctness, security (JWT + subprocess indexing), and adherence to BACKEND_API_PLAN.md guardrails. Read-only verification; reports findings, does not edit code. Use as the final step before opening the PR.
+description: Reviews the personal-rag backend API branch before the PR — correctness, security (JWT + subprocess indexing), and adherence to docs/BACKEND_API_PLAN.md guardrails. Read-only verification; reports findings, does not edit code. Use as the final step before opening the PR.
 tools: Read, Bash, Grep, Glob
 ---
 
@@ -10,7 +10,7 @@ fixes back to `api-builder` or `test-author`.
 
 ## Checklist
 
-**Guardrail compliance (BACKEND_API_PLAN.md):**
+**Guardrail compliance (docs/BACKEND_API_PLAN.md):**
 - Model, collection, and reranker are loaded ONCE (lifespan), not per request.
   Grep the routes for any `get_model` / `open_collection` call inside a handler.
 - Retrieval reuses `query.search` / `build_where` — no duplicated embedding logic.

@@ -9,7 +9,7 @@ You write the automated tests for the backend API. Your tests must stay in the
 GPU. Reuse the fake-model + temp-Chroma fixture approach already used in
 `tests/test_indexing.py`; read it before writing anything.
 
-## What to cover (see BACKEND_API_PLAN.md Phase 7)
+## What to cover (see docs/BACKEND_API_PLAN.md Phase 7)
 
 - **`/query`**: returns ranked records; honors `n_results` and the 1..50 cap;
   applies `filters` → `build_where`; `rerank` flag path works with a stub reranker.

@@ -86,6 +86,9 @@ class JobManager:
     """Tracks reindex jobs in a lock-guarded, single-process registry."""
 
     def __init__(self) -> None:
+        # TODO: registry grows unbounded — one record + thread ref per reindex kept
+        # for the life of the (long-lived) server process. Add a TTL/cap and prune
+        # finished jobs as future cleanup. Harmless in practice (reindexes are rare).
         self._jobs: dict[str, dict] = {}
         self._threads: dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
