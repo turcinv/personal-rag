@@ -56,14 +56,18 @@ class QueryResponse(BaseModel):
     results: list[dict[str, Any]]
 
 
-# ── Indexing (Phase 4 — stubs) ─────────────────────────────────────────────────
+# ── Indexing (Phase 4) ─────────────────────────────────────────────────────────
 
 
 class IndexJobResponse(BaseModel):
-    """Returned by ``POST /index`` (202) and ``GET /index/jobs/{job_id}``."""
+    """Returned by ``POST /index`` (202) and ``GET /index/jobs/{job_id}``.
+
+    Deliberately omits the server-side log path to avoid host-path leakage; on
+    failure ``error`` carries a short reason (e.g. the indexer's tail log)."""
 
     job_id: str
     status: str
     started: Optional[str] = None
     finished: Optional[str] = None
     returncode: Optional[int] = None
+    error: Optional[str] = None
