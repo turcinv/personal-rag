@@ -1,13 +1,11 @@
 """Pydantic request/response models for the HTTP backend.
 
-Phase 2: HealthResponse and StatusResponse are defined here. QueryRequest /
-QueryResponse and the index-job schemas are stubs to be fleshed out in Phases
-3-4; keep them importable so routes can reference them.
+Health/status (Phase 2), query (Phase 3), and index-job (Phase 4 — stub) models.
 """
 
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 
 class HealthResponse(BaseModel):
@@ -25,11 +23,12 @@ class StatusResponse(BaseModel):
     reranker_model: str
 
 
-# ── Query (Phase 3 — stubs) ────────────────────────────────────────────────────
+# ── Query (Phase 3) ────────────────────────────────────────────────────────────
 
 
 class QueryFilters(BaseModel):
-    """Optional metadata constraints mapped to ``query.build_where``."""
+    """Optional metadata constraints mapped to ``query.build_where``. The JSON
+    field ``type`` maps to build_where's ``type_`` parameter in the handler."""
 
     domain: Optional[str] = None
     subdomain: Optional[str] = None
@@ -40,9 +39,9 @@ class QueryFilters(BaseModel):
 
 class QueryRequest(BaseModel):
     """Semantic query request. ``n_results`` is bounded 1..50 to protect the
-    Jetson's 8 GB memory budget."""
+    Jetson's 8 GB memory budget; empty/whitespace queries are rejected (422)."""
 
-    query: str = Field(..., min_length=1)
+    query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     n_results: int = Field(8, ge=1, le=50)
     rerank: bool = True
     filters: Optional[QueryFilters] = None
