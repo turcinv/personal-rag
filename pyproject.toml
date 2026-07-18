@@ -43,6 +43,7 @@ rag-dup-detect = "extractor.dup_detect:main"
 rag-link-mocs = "extractor.link_mocs:main"
 rag-search = "extractor.search:main"
 rag-serve = "rag.api.app:run"
+rag-token = "rag.api.token:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
