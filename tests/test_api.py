@@ -12,7 +12,7 @@ This file grows across the backend-API phases. Covered so far:
   * GET /health (unauthenticated liveness)
   * GET /status (authenticated collection report)
   * POST /query (envelope, n_results cap, filter->build_where, rerank flag)
-Later slices append POST /index tests.
+  * POST /index + GET /index/jobs/{id} (202, concurrency 409, success/failure, 404, auth)
 """
 
 from datetime import datetime, timedelta, timezone
@@ -362,3 +362,176 @@ def test_query_invalid_token_401_before_search(client, jwt_secret, patch_search)
     resp = client.post("/query", headers=_auth("garbage"), json={"query": "q"})
     assert resp.status_code == 401
     assert rec.calls == []
+
+
+# ── POST /index + GET /index/jobs/{id} ──────────────────────────────────────────
+#
+# The job manager (rag.api.jobs.manager) is a PROCESS-GLOBAL singleton, so a
+# leftover "running" job would leak into later tests and cause spurious 409s. The
+# `indexer` fixture (below) both (a) monkeypatches the subprocess seam
+# `rag.api.jobs._spawn_indexer` with a fake process — NO real subprocess, NO real
+# indexing — and (b) resets the manager registry before and after each test and
+# releases any still-blocked fake process so no monitor thread lingers.
+
+import threading  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import rag.api.jobs as jobs  # noqa: E402
+
+
+class FakeProc:
+    """Stand-in for subprocess.Popen: .wait() blocks on an Event, .returncode set.
+
+    With ``release_immediately`` the wait returns at once (normal fast tests);
+    otherwise a test holds the process in the "running" window until it calls
+    ``release()`` — deterministic, no sleeps.
+    """
+
+    def __init__(self, returncode: int, release_immediately: bool):
+        self._returncode = returncode
+        self._event = threading.Event()
+        if release_immediately:
+            self._event.set()
+        self.returncode = None
+        self.pid = 4242
+
+    def wait(self) -> int:
+        self._event.wait()
+        self.returncode = self._returncode
+        return self._returncode
+
+    def release(self) -> None:
+        self._event.set()
+
+
+class _IndexerControl:
+    """Test handle over the fake spawn: configure exit code / blocking / log line
+    and inspect the fake processes that were spawned."""
+
+    def __init__(self):
+        self._cfg = {"returncode": 0, "block": False, "log_line": None}
+        self.procs: list[FakeProc] = []
+
+    def configure(self, **kw):
+        self._cfg.update(kw)
+
+    def _spawn(self, log_path):
+        proc = FakeProc(self._cfg["returncode"], release_immediately=not self._cfg["block"])
+        if self._cfg["log_line"] is not None:
+            Path(log_path).write_text(self._cfg["log_line"], encoding="utf-8")
+        proc.log_path = str(log_path)
+        self.procs.append(proc)
+        return proc
+
+
+def _reset_manager():
+    with jobs.manager._lock:
+        jobs.manager._jobs.clear()
+        jobs.manager._threads.clear()
+
+
+@pytest.fixture
+def indexer(monkeypatch, tmp_path):
+    """Fake subprocess seam + manager reset. Yields an _IndexerControl.
+
+    Job logs are directed into tmp_path via RAG_LOG_PATH so the route's log-dir
+    mkdir never writes into the repo.
+    """
+    monkeypatch.setenv("RAG_LOG_PATH", str(tmp_path / "logs" / "rag.log"))
+    ctl = _IndexerControl()
+    monkeypatch.setattr(jobs, "_spawn_indexer", ctl._spawn)
+    _reset_manager()
+    try:
+        yield ctl
+    finally:
+        # Release any process still blocked in wait(), drain its monitor thread,
+        # then clear the registry so no job leaks into the next test.
+        for p in ctl.procs:
+            p.release()
+        for jid in list(jobs.manager._threads):
+            jobs.manager.join(jid, timeout=2.0)
+        _reset_manager()
+
+
+def test_index_start_returns_202_no_path_leak(client, jwt_secret, indexer):
+    resp = client.post("/index", headers=_auth(_mint()))
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["job_id"]
+    assert body["status"] == "running"  # impl inserts directly as running (no queued phase)
+    # The server-side log/host path must never appear in the response body.
+    assert "log_path" not in body and "path" not in body
+    assert not any(isinstance(v, str) and "index-" in v and ".log" in v for v in body.values())
+
+
+def test_index_job_succeeds_after_join(client, jwt_secret, indexer):
+    indexer.configure(returncode=0, block=False)
+    jid = client.post("/index", headers=_auth(_mint())).json()["job_id"]
+    jobs.manager.join(jid, timeout=2.0)
+
+    resp = client.get(f"/index/jobs/{jid}", headers=_auth(_mint()))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "succeeded"
+    assert body["started"] and body["finished"]
+    assert body["returncode"] == 0
+    assert body["error"] is None
+
+
+def test_index_second_run_409_then_freed(client, jwt_secret, indexer):
+    # First run stays in the "running" window (its .wait() blocks until released).
+    indexer.configure(block=True)
+    r1 = client.post("/index", headers=_auth(_mint()))
+    assert r1.status_code == 202
+    jid = r1.json()["job_id"]
+
+    # Second POST while the first is running → 409, and no second process spawned.
+    r2 = client.post("/index", headers=_auth(_mint()))
+    assert r2.status_code == 409
+    assert len(indexer.procs) == 1
+
+    # Let the first finish; the active guard should clear.
+    indexer.procs[0].release()
+    jobs.manager.join(jid, timeout=2.0)
+
+    indexer.configure(block=False)
+    r3 = client.post("/index", headers=_auth(_mint()))
+    assert r3.status_code == 202
+    assert r3.json()["job_id"] != jid
+
+
+def test_index_job_failed_reports_error(client, jwt_secret, indexer):
+    """A nonzero exit (simulating the indexer's 0-files anti-wipe RuntimeError)
+    surfaces as status=failed with a non-empty error from the log tail."""
+    indexer.configure(
+        returncode=1,
+        block=False,
+        log_line="RuntimeError: refusing to prune: 0 files found in every source",
+    )
+    jid = client.post("/index", headers=_auth(_mint())).json()["job_id"]
+    jobs.manager.join(jid, timeout=2.0)
+
+    resp = client.get(f"/index/jobs/{jid}", headers=_auth(_mint()))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "failed"
+    assert body["returncode"] == 1
+    assert body["error"] and "0 files" in body["error"]
+    assert "log_path" not in body
+
+
+def test_index_job_unknown_404(client, jwt_secret, indexer):
+    resp = client.get("/index/jobs/does-not-exist", headers=_auth(_mint()))
+    assert resp.status_code == 404
+
+
+def test_index_start_requires_auth_no_spawn(client, jwt_secret, indexer):
+    assert client.post("/index").status_code == 401
+    assert client.post("/index", headers=_auth("garbage")).status_code == 401
+    # Auth rejected before manager.start → no process was ever spawned.
+    assert indexer.procs == []
+
+
+def test_index_job_status_requires_auth(client, jwt_secret, indexer):
+    assert client.get("/index/jobs/whatever").status_code == 401
+    assert client.get("/index/jobs/whatever", headers=_auth("garbage")).status_code == 401
