@@ -42,18 +42,23 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _tail_log(log_path: str, max_chars: int = 500) -> str:
-    """Return the tail of the indexer log as a short failure reason.
+def _tail_log(log_path: str, max_chars: int = 300) -> str:
+    """Return the last non-empty log line as a short failure reason.
 
-    For the 0-files anti-wipe guard this is the RuntimeError message. Never
-    raises: an unreadable/absent log yields a generic message."""
+    Deliberately a SINGLE line, not a raw multi-line tail: the last line is the
+    most informative (the anti-wipe guard's RuntimeError message, or "Vault path
+    does not exist: ...") while multi-line tails would leak Python tracebacks and
+    container-internal absolute paths (e.g. /app/src/rag/indexer.py) into the
+    HTTP response. The full log stays on disk at log_path. Never raises: an
+    unreadable/absent/empty log yields a generic message."""
     try:
-        text = Path(log_path).read_text(encoding="utf-8", errors="replace").strip()
+        text = Path(log_path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return "indexer exited nonzero (no log available)"
-    if not text:
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
         return "indexer exited nonzero (empty log)"
-    return text[-max_chars:].strip()
+    return lines[-1][:max_chars]
 
 
 def _spawn_indexer(log_path: Path) -> subprocess.Popen:
@@ -145,21 +150,45 @@ class JobManager:
     # ── internals ───────────────────────────────────────────────────────────
 
     def _monitor(self, job_id: str, proc) -> None:
-        """Block on the subprocess (off the event loop), then update the record."""
-        returncode = proc.wait()
-        with self._lock:
-            record = self._jobs.get(job_id)
-            if record is None:
-                return
-            record["returncode"] = returncode
-            record["finished"] = _now()
-            if returncode == 0:
-                record["status"] = "succeeded"
-                logger.info("index job %s succeeded", job_id)
-            else:
-                record["status"] = "failed"
-                record["error"] = _tail_log(record["log_path"])
-                logger.warning("index job %s failed (rc=%s)", job_id, returncode)
+        """Block on the subprocess (off the event loop), then update the record.
+
+        The whole body is guarded: if ``proc.wait()`` or the status update raises,
+        the ``finally`` clause force-transitions the job out of ``running`` to
+        ``failed``. Without this, a crashed monitor would leave the job stuck at
+        ``running`` forever, and the concurrency guard would then 409 every future
+        reindex with no recovery. The normal success/failure path is unchanged."""
+        try:
+            returncode = proc.wait()
+            with self._lock:
+                record = self._jobs.get(job_id)
+                if record is None:
+                    return
+                record["returncode"] = returncode
+                record["finished"] = _now()
+                if returncode == 0:
+                    record["status"] = "succeeded"
+                    logger.info("index job %s succeeded", job_id)
+                else:
+                    record["status"] = "failed"
+                    record["error"] = _tail_log(record["log_path"])
+                    logger.warning("index job %s failed (rc=%s)", job_id, returncode)
+        except Exception as exc:
+            logger.exception("index job %s monitor crashed", job_id)
+            with self._lock:
+                record = self._jobs.get(job_id)
+                if record is not None:
+                    record["error"] = f"indexer monitor crashed: {exc}"
+        finally:
+            # Guarantee the job can never be left in `running` once the monitor
+            # thread exits — otherwise the concurrency guard would 409 forever.
+            with self._lock:
+                record = self._jobs.get(job_id)
+                if record is not None and record["status"] in ACTIVE_STATUSES:
+                    record["status"] = "failed"
+                    if record["finished"] is None:
+                        record["finished"] = _now()
+                    if not record["error"]:
+                        record["error"] = "indexer monitor exited without completing"
 
 
 # Module-level singleton — single process, so one registry is authoritative.
