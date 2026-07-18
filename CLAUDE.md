@@ -11,6 +11,8 @@ Local retrieval index for an Obsidian knowledge vault + a PDF book/resource libr
 - Generates per-resource Obsidian note stubs and injects backlinks into Topic MOCs
 - Indexes vault Markdown notes and document JSON into a local ChromaDB collection
 - Retrieves relevant chunks by semantic similarity query
+- Serves retrieval (and triggers reindexing) over HTTP via a JWT-authenticated FastAPI
+  backend (`rag-serve`) that loads the model/collection/reranker once at startup
 - Fully offline — no cloud APIs used for indexing or retrieval
 - Compatible with both macOS/x86 and NVIDIA Jetson (Python 3.10, same codebase)
 
@@ -27,6 +29,12 @@ make install          # creates .venv and installs package + deps
 .venv/bin/rag-query "your question"
 .venv/bin/rag-query "your question" -n 12    # optional: number of results (default 8)
 .venv/bin/rag-query "Kubernetes" --domain DevOps
+
+# HTTP backend (query + indexing over HTTP; JWT-authenticated). Full guide: docs/api.md
+export RAG_API_JWT_SECRET="$(openssl rand -hex 32)"   # required; ≥32 bytes
+make serve                                            # or: .venv/bin/rag-serve  (0.0.0.0:8000)
+.venv/bin/rag-token --subject telegram-bot            # mint a service token for a client
+make jetson-serve                                     # run the api compose service on the Jetson
 
 # Extraction pipeline (run in order for a full pipeline run)
 make extract          # extract text from Books + Resources dirs
@@ -70,7 +78,15 @@ personal-rag/
 │   │   │   └── json_doc.py    #   extract_json_doc (pre-extracted indexed/*.json)
 │   │   ├── indexing.py       # incremental engine: embed/upsert, per-file diff, run_source
 │   │   ├── indexer.py        # main() orchestration (MD + PDF + JSON → ChromaDB); entry: rag-index
-│   │   └── query.py          # semantic query CLI; entry: rag-query
+│   │   ├── query.py          # semantic query CLI + search()/build_where seam; entry: rag-query
+│   │   └── api/              # FastAPI HTTP backend (reuses query.search — never reimplements retrieval)
+│   │       ├── app.py         #   app + lifespan: load model/collection/reranker ONCE; entry: rag-serve
+│   │       ├── auth.py        #   HS256 JWT bearer auth dependency (require_jwt); secret from RAG_API_JWT_SECRET
+│   │       ├── token.py       #   mint a service JWT for the bots; entry: rag-token
+│   │       ├── deps.py        #   get_rag_state (shared app.state accessor)
+│   │       ├── jobs.py        #   background reindex subprocess manager + in-process job registry
+│   │       ├── schemas.py     #   pydantic request/response models
+│   │       └── routes/        #   query.py (/health, /query, /status) + index.py (/index, /index/jobs/{id})
 │   └── extractor/            # document extraction pipeline (merged from doc-text-extractor)
 │       ├── __init__.py
 │       ├── extract_text.py    # PDF/EPUB/MD → text_output/*.json; entry: rag-extract
@@ -233,3 +249,4 @@ Summary, ranked by impact/effort — do these in order, and build the eval set (
 | [docs/architecture.md](docs/architecture.md) | Pipeline walkthrough, chunk IDs, ChromaDB state, telemetry workaround |
 | [docs/configuration.md](docs/configuration.md) | All `config.yaml` fields, env var overrides, hardware tuning table |
 | [docs/jetson.md](docs/jetson.md) | Jetson-specific install, Docker, memory budget, IPC constraints |
+| [docs/api.md](docs/api.md) | HTTP backend: endpoints, JWT auth, `rag-serve`/`rag-token`, `make serve`/`jetson-serve`, client examples |

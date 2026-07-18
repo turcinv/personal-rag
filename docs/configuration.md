@@ -83,6 +83,9 @@ Override any path without editing `config.yaml`. Copy `.env.example` to `.env` �
 | `RAG_LOG_PATH` | `log_path` | Set to `/data/logs/rag.log` automatically in Docker (bind-mounted to `./logs`). |
 | `RAG_LOG_DB_PATH` | `log_db_path` | SQLite log DB path. Defaults to the text log path with a `.sqlite` suffix. |
 | `RAG_CONFIG_PATH` | Path to `config.yaml` itself | Useful when running from a directory other than the project root. |
+| `RAG_API_JWT_SECRET` | — (API only) | HS256 shared secret for the backend API (`rag-serve` / `rag-token`). **Required** to serve — protected routes return 500 if unset; no default. Use a strong secret (≥32 bytes; PyJWT warns on short keys). Only the API server needs it. |
+| `RAG_API_HOST` | — (API only) | Bind address for the API server. Default `0.0.0.0`. |
+| `RAG_API_PORT` | — (API only) | Bind port for the API server. Default `8000`. |
 
 ### .env example
 
