@@ -7,11 +7,12 @@ NEVER enter that lifespan. Instead a fake RAG state dict is injected via
 context-manager form, so startup/shutdown never run), mirroring the fake-model /
 fake-collection approach in ``test_indexing.py`` and ``test_query_search.py``.
 
-This file grows across the backend-API phases. This slice covers:
+This file grows across the backend-API phases. Covered so far:
   * auth (JWT / bearer contract) on a protected route
   * GET /health (unauthenticated liveness)
   * GET /status (authenticated collection report)
-Later slices append POST /query and POST /index tests.
+  * POST /query (envelope, n_results cap, filter->build_where, rerank flag)
+Later slices append POST /index tests.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -182,3 +183,182 @@ def test_status_secret_unset_is_500(client, monkeypatch):
     token = _mint()  # minted against SECRET, but the server has no secret to check
     resp = client.get("/status", headers=_auth(token))
     assert resp.status_code == 500
+
+
+# ── POST /query ─────────────────────────────────────────────────────────────────
+#
+# The route does `from ... import query as rag_query` then calls
+# `rag_query.search(...)` / `rag_query.build_where(...)`. We patch `search` on the
+# shared `rag.query` module (the object `rag_query` refers to) so the route calls
+# our recorder — no real model/collection is touched — while the REAL `build_where`
+# still runs, letting us assert the exact where-dict the route produced.
+
+import rag.query as rag_query_mod  # noqa: E402  (kept with the /query section)
+
+
+class SearchRecorder:
+    """Captures the kwargs the route passes to search() and returns canned records."""
+
+    def __init__(self, records):
+        self.records = records
+        self.calls = []
+
+    def __call__(self, query, **kwargs):
+        self.calls.append({"query": query, **kwargs})
+        return self.records
+
+    @property
+    def last(self):
+        return self.calls[-1]
+
+
+def _records(with_rerank_score=False):
+    rec = {
+        "document": "some chunk text",
+        "metadata": {"title": "T", "path": "p.md", "domain": "DevOps"},
+        "distance": 0.12,
+        "rank": 1,
+    }
+    if with_rerank_score:
+        rec["rerank_score"] = 9.5
+    return [rec]
+
+
+@pytest.fixture
+def patch_search(monkeypatch):
+    """Install a SearchRecorder over rag.query.search; return a factory.
+
+    Call the returned factory with the records you want search() to yield; it
+    swaps in a fresh recorder and hands it back so the test can inspect .last.
+    monkeypatch tears the patch down automatically after the test.
+    """
+
+    def install(records):
+        rec = SearchRecorder(records)
+        monkeypatch.setattr(rag_query_mod, "search", rec)
+        return rec
+
+    return install
+
+
+def test_query_valid_returns_envelope(client, jwt_secret, patch_search, fake_state):
+    rec = patch_search(_records(with_rerank_score=True))
+    resp = client.post(
+        "/query", headers=_auth(_mint()), json={"query": "how do I do X"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["query"] == "how do I do X"
+    assert body["count"] == 1
+    assert body["reranked"] is True
+    assert isinstance(body["results"], list) and len(body["results"]) == 1
+    r = body["results"][0]
+    assert r["document"] == "some chunk text"
+    assert r["metadata"]["path"] == "p.md"
+    assert r["distance"] == 0.12
+    assert r["rank"] == 1
+    # app.state's model/collection/config (the injected fakes) were forwarded to search()
+    assert rec.last["model"] is fake_state["model"]
+    assert rec.last["collection"] is fake_state["collection"]
+    assert rec.last["config"] is fake_state["config"]
+
+
+def test_query_defaults_forwarded(client, jwt_secret, patch_search):
+    """Body with only `query` → search() gets n_results=8, rerank=True, filters=None."""
+    rec = patch_search(_records())
+    resp = client.post("/query", headers=_auth(_mint()), json={"query": "q"})
+    assert resp.status_code == 200
+    assert rec.last["n_results"] == 8
+    assert rec.last["rerank"] is True
+    assert rec.last["filters"] is None
+
+
+@pytest.mark.parametrize(
+    "n_results,expected",
+    [(0, 422), (51, 422), (1, 200), (50, 200)],
+)
+def test_query_n_results_cap(client, jwt_secret, patch_search, n_results, expected):
+    patch_search(_records())
+    resp = client.post(
+        "/query",
+        headers=_auth(_mint()),
+        json={"query": "q", "n_results": n_results},
+    )
+    assert resp.status_code == expected
+
+
+@pytest.mark.parametrize("bad_query", ["", "   ", "\n\t "])
+def test_query_empty_or_whitespace_query_422(client, jwt_secret, patch_search, bad_query):
+    patch_search(_records())
+    resp = client.post("/query", headers=_auth(_mint()), json={"query": bad_query})
+    assert resp.status_code == 422
+
+
+def test_query_filters_map_to_build_where(client, jwt_secret, patch_search):
+    rec = patch_search(_records())
+    resp = client.post(
+        "/query",
+        headers=_auth(_mint()),
+        json={"query": "q", "filters": {"domain": "DevOps", "type": "book"}},
+    )
+    assert resp.status_code == 200
+    assert rec.last["filters"] == {
+        "$and": [
+            {"domain": {"$eq": "DevOps"}},
+            {"type": {"$eq": "book"}},
+        ]
+    }
+
+
+def test_query_no_filters_passes_none(client, jwt_secret, patch_search):
+    rec = patch_search(_records())
+    resp = client.post("/query", headers=_auth(_mint()), json={"query": "q"})
+    assert resp.status_code == 200
+    assert rec.last["filters"] is None
+
+
+def test_query_rerank_true_with_scores_reports_reranked(client, jwt_secret, patch_search):
+    rec = patch_search(_records(with_rerank_score=True))
+    resp = client.post(
+        "/query", headers=_auth(_mint()), json={"query": "q", "rerank": True}
+    )
+    assert resp.status_code == 200
+    assert rec.last["rerank"] is True
+    assert resp.json()["reranked"] is True
+
+
+def test_query_rerank_false_reports_not_reranked(client, jwt_secret, patch_search):
+    rec = patch_search(_records(with_rerank_score=False))
+    resp = client.post(
+        "/query", headers=_auth(_mint()), json={"query": "q", "rerank": False}
+    )
+    assert resp.status_code == 200
+    assert rec.last["rerank"] is False
+    assert resp.json()["reranked"] is False
+
+
+def test_query_rerank_true_but_no_scores_reports_not_reranked(
+    client, jwt_secret, patch_search
+):
+    """reranked is False when requested but no record carries a rerank_score
+    (e.g. empty dense pool), matching the handler's `any(...)` guard."""
+    patch_search(_records(with_rerank_score=False))
+    resp = client.post(
+        "/query", headers=_auth(_mint()), json={"query": "q", "rerank": True}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["reranked"] is False
+
+
+def test_query_no_token_401_before_search(client, jwt_secret, patch_search):
+    rec = patch_search(_records())
+    resp = client.post("/query", json={"query": "q"})
+    assert resp.status_code == 401
+    assert rec.calls == []  # auth rejected before any retrieval
+
+
+def test_query_invalid_token_401_before_search(client, jwt_secret, patch_search):
+    rec = patch_search(_records())
+    resp = client.post("/query", headers=_auth("garbage"), json={"query": "q"})
+    assert resp.status_code == 401
+    assert rec.calls == []
