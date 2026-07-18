@@ -2,11 +2,11 @@
         docker-index docker-query docker-test \
         jetson-pipeline-status jetson-full-pipeline \
         jetson-index jetson-query jetson-eval jetson-test \
-        extract enrich build-index build-notes build-sqlite build-vault-index \
+        extract enrich build-index build-notes build-books-index build-sqlite build-vault-index \
         dup-detect link-mocs search analyze \
-        docker-extract docker-enrich docker-build-index docker-build-notes \
+        docker-extract docker-enrich docker-build-index docker-build-notes docker-build-books-index \
         docker-build-sqlite docker-build-vault-index docker-dup-detect docker-link-mocs \
-        jetson-extract jetson-enrich jetson-build-index jetson-build-notes \
+        jetson-extract jetson-enrich jetson-build-index jetson-build-notes jetson-build-books-index \
         jetson-build-sqlite jetson-build-vault-index jetson-dup-detect jetson-link-mocs
 
 PYTHON := .venv/bin/python
@@ -41,6 +41,7 @@ help:
 	@echo "  make enrich               enrich inventory metadata from embedded fields"
 	@echo "  make build-index          join inventory + text into indexed/*.json"
 	@echo "  make build-notes          generate Obsidian Resource Notes"
+	@echo "  make build-books-index    regenerate the Books Index aggregate note"
 	@echo "  make build-sqlite         build FTS5 SQLite database"
 	@echo "  make build-vault-index    index vault Knowledge/ notes into JSONL"
 	@echo "  make dup-detect           near-duplicate detection report"
@@ -91,8 +92,8 @@ eval:
 sync-to-jetson:
 	@echo "Syncing knowledge-base-index → $(JETSON_HOST):$(JETSON_OUTPUT_PATH)"
 	rsync -avz --progress \
-		$(shell python3 -c "import yaml,os; c=yaml.safe_load(open('config.yaml')); print(os.path.expanduser(c.get('extractor',{}).get('output_path','~/Documents/knowledge-base-index')))") \
-		$(JETSON_HOST):$(JETSON_OUTPUT_PATH)
+		$(shell python3 -c "import yaml,os; c=yaml.safe_load(open('config.yaml')); print(os.path.expanduser(c.get('extractor',{}).get('output_path','~/Documents/knowledge-base-index')))")/ \
+		$(JETSON_HOST):$(JETSON_OUTPUT_PATH)/
 	@echo "Done. Run 'make build-jetson && make jetson-index' on the Jetson."
 
 test:
@@ -141,6 +142,11 @@ build-notes:
 	    --text-dir "$(BOOKS)/text_output" --text-dir "$(RESOURCES)/text_output" \
 	    --generated-dir "$(MOCS)" \
 	    --out "$(NOTES_OUT)"
+
+build-books-index:
+	.venv/bin/rag-build-books-index \
+	    --inventory "$(CATALOG)/resource_inventory_enriched.jsonl" \
+	    --out "$(MOCS)/Books Index.md"
 
 build-sqlite:
 	.venv/bin/rag-build-sqlite \
@@ -205,6 +211,11 @@ docker-build-notes:
 	    --generated-dir /mocs \
 	    --out "/mocs/Resource Notes"
 
+docker-build-books-index:
+	docker compose run --rm rag rag-build-books-index \
+	    --inventory /catalog/resource_inventory_enriched.jsonl \
+	    --out "/mocs/Books Index.md"
+
 docker-build-sqlite:
 	docker compose run --rm rag rag-build-sqlite \
 	    --jsonl /extractor-out/indexed/index_documents.jsonl \
@@ -238,8 +249,8 @@ jetson-pipeline-status:
 # Full pipeline: extraction → enrichment → build steps → index.
 # Requires PDF source mounts (RAG_PDF_BOOKS_PATH / RAG_PDF_RESOURCES_PATH) to be set.
 jetson-full-pipeline: jetson-extract jetson-enrich jetson-build-index jetson-build-notes \
-                      jetson-build-sqlite jetson-build-vault-index jetson-link-mocs \
-                      jetson-index
+                      jetson-build-books-index jetson-build-sqlite jetson-build-vault-index \
+                      jetson-link-mocs jetson-index
 
 jetson-index:
 	docker compose -f docker-compose.jetson.yml run --rm rag python -m rag.indexer
@@ -276,6 +287,11 @@ jetson-build-notes:
 	    --text-dir /books/text_output --text-dir /resources/text_output \
 	    --generated-dir /mocs \
 	    --out "/mocs/Resource Notes"
+
+jetson-build-books-index:
+	docker compose -f docker-compose.jetson.yml run --rm rag rag-build-books-index \
+	    --inventory /catalog/resource_inventory_enriched.jsonl \
+	    --out "/mocs/Books Index.md"
 
 jetson-build-sqlite:
 	docker compose -f docker-compose.jetson.yml run --rm rag rag-build-sqlite \
