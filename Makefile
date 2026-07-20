@@ -1,12 +1,13 @@
 .PHONY: help install index query eval pipeline-status sync-to-jetson test test-unit build build-jetson \
+        serve docker-serve jetson-serve \
         docker-index docker-query docker-test \
         jetson-pipeline-status jetson-full-pipeline \
         jetson-index jetson-query jetson-eval jetson-test \
-        extract enrich build-index build-notes build-sqlite build-vault-index \
+        extract enrich build-index build-notes build-books-index build-sqlite build-vault-index \
         dup-detect link-mocs search analyze \
-        docker-extract docker-enrich docker-build-index docker-build-notes \
+        docker-extract docker-enrich docker-build-index docker-build-notes docker-build-books-index \
         docker-build-sqlite docker-build-vault-index docker-dup-detect docker-link-mocs \
-        jetson-extract jetson-enrich jetson-build-index jetson-build-notes \
+        jetson-extract jetson-enrich jetson-build-index jetson-build-notes jetson-build-books-index \
         jetson-build-sqlite jetson-build-vault-index jetson-dup-detect jetson-link-mocs
 
 PYTHON := .venv/bin/python
@@ -31,6 +32,7 @@ help:
 	@echo "  make query Q=\"...\"        semantic query"
 	@echo "  make pipeline-status      check all extraction pipeline outputs"
 	@echo "  make eval [ARGS=...]      recall@k / MRR eval over golden_queries.jsonl"
+	@echo "  make serve                run the HTTP API locally (rag-serve, port 8000)"
 	@echo "  make sync-to-jetson       rsync all extraction outputs to Jetson (set JETSON_HOST)"
 	@echo "  make test-unit            offline pytest unit suite"
 	@echo "  make test [K=keyword]     retrieval smoke tests (needs an index)"
@@ -41,6 +43,7 @@ help:
 	@echo "  make enrich               enrich inventory metadata from embedded fields"
 	@echo "  make build-index          join inventory + text into indexed/*.json"
 	@echo "  make build-notes          generate Obsidian Resource Notes"
+	@echo "  make build-books-index    regenerate the Books Index aggregate note"
 	@echo "  make build-sqlite         build FTS5 SQLite database"
 	@echo "  make build-vault-index    index vault Knowledge/ notes into JSONL"
 	@echo "  make dup-detect           near-duplicate detection report"
@@ -50,6 +53,7 @@ help:
 	@echo "Docker x86:"
 	@echo "  make build                build personal-rag:latest"
 	@echo "  make docker-index / docker-query Q=\"...\""
+	@echo "  make docker-serve         run the HTTP API container (port 8000)"
 	@echo "  make docker-extract / docker-enrich / docker-build-index ..."
 	@echo ""
 	@echo "Docker Jetson (run on Jetson):"
@@ -59,6 +63,7 @@ help:
 	@echo "  make jetson-index               reindex into the ChromaDB collection"
 	@echo "  make jetson-query Q=\"...\"       semantic query"
 	@echo "  make jetson-eval [ARGS=...]     recall@k / MRR eval over golden_queries.jsonl"
+	@echo "  make jetson-serve               run the HTTP API container (port 8000)"
 	@echo "  make jetson-extract / jetson-enrich / jetson-build-index ..."
 	@echo ""
 
@@ -86,13 +91,18 @@ pipeline-status:
 eval:
 	$(PYTHON) scripts/eval_recall.py $(ARGS)
 
+# Run the HTTP API locally. Reads RAG_API_HOST/RAG_API_PORT/RAG_API_JWT_SECRET
+# from the environment / .env. Loads model + collection + reranker once.
+serve:
+	.venv/bin/rag-serve
+
 # Sync all extraction outputs (text_output_*, indexed/, resources.db) from macOS → Jetson.
 # Set JETSON_HOST in .env or pass on the command line: make sync-to-jetson JETSON_HOST=gpu-01
 sync-to-jetson:
 	@echo "Syncing knowledge-base-index → $(JETSON_HOST):$(JETSON_OUTPUT_PATH)"
 	rsync -avz --progress \
-		$(shell python3 -c "import yaml,os; c=yaml.safe_load(open('config.yaml')); print(os.path.expanduser(c.get('extractor',{}).get('output_path','~/Documents/knowledge-base-index')))") \
-		$(JETSON_HOST):$(JETSON_OUTPUT_PATH)
+		$(shell python3 -c "import yaml,os; c=yaml.safe_load(open('config.yaml')); print(os.path.expanduser(c.get('extractor',{}).get('output_path','~/Documents/knowledge-base-index')))")/ \
+		$(JETSON_HOST):$(JETSON_OUTPUT_PATH)/
 	@echo "Done. Run 'make build-jetson && make jetson-index' on the Jetson."
 
 test:
@@ -142,6 +152,11 @@ build-notes:
 	    --generated-dir "$(MOCS)" \
 	    --out "$(NOTES_OUT)"
 
+build-books-index:
+	.venv/bin/rag-build-books-index \
+	    --inventory "$(CATALOG)/resource_inventory_enriched.jsonl" \
+	    --out "$(MOCS)/Books Index.md"
+
 build-sqlite:
 	.venv/bin/rag-build-sqlite \
 	    --jsonl "$(OUTPUT)/indexed/index_documents.jsonl" \
@@ -181,6 +196,10 @@ docker-query:
 docker-test:
 	docker compose run --rm rag python tests/test_queries.py $(K)
 
+# Long-running HTTP API server (port 8000). Set RAG_API_JWT_SECRET in .env.
+docker-serve:
+	docker compose up api
+
 docker-extract:
 	docker compose run --rm rag rag-extract /books
 	docker compose run --rm rag rag-extract /resources
@@ -204,6 +223,11 @@ docker-build-notes:
 	    --text-dir /books/text_output --text-dir /resources/text_output \
 	    --generated-dir /mocs \
 	    --out "/mocs/Resource Notes"
+
+docker-build-books-index:
+	docker compose run --rm rag rag-build-books-index \
+	    --inventory /catalog/resource_inventory_enriched.jsonl \
+	    --out "/mocs/Books Index.md"
 
 docker-build-sqlite:
 	docker compose run --rm rag rag-build-sqlite \
@@ -238,8 +262,8 @@ jetson-pipeline-status:
 # Full pipeline: extraction → enrichment → build steps → index.
 # Requires PDF source mounts (RAG_PDF_BOOKS_PATH / RAG_PDF_RESOURCES_PATH) to be set.
 jetson-full-pipeline: jetson-extract jetson-enrich jetson-build-index jetson-build-notes \
-                      jetson-build-sqlite jetson-build-vault-index jetson-link-mocs \
-                      jetson-index
+                      jetson-build-books-index jetson-build-sqlite jetson-build-vault-index \
+                      jetson-link-mocs jetson-index
 
 jetson-index:
 	docker compose -f docker-compose.jetson.yml run --rm rag python -m rag.indexer
@@ -249,6 +273,10 @@ jetson-query:
 
 jetson-eval:
 	docker compose -f docker-compose.jetson.yml run --rm rag python -m rag.eval $(ARGS)
+
+# Long-running HTTP API server (port 8000). Set RAG_API_JWT_SECRET in .env.
+jetson-serve:
+	docker compose -f docker-compose.jetson.yml up api
 
 jetson-test:
 	docker compose -f docker-compose.jetson.yml run --rm rag python tests/test_queries.py $(K)
@@ -276,6 +304,11 @@ jetson-build-notes:
 	    --text-dir /books/text_output --text-dir /resources/text_output \
 	    --generated-dir /mocs \
 	    --out "/mocs/Resource Notes"
+
+jetson-build-books-index:
+	docker compose -f docker-compose.jetson.yml run --rm rag rag-build-books-index \
+	    --inventory /catalog/resource_inventory_enriched.jsonl \
+	    --out "/mocs/Books Index.md"
 
 jetson-build-sqlite:
 	docker compose -f docker-compose.jetson.yml run --rm rag rag-build-sqlite \

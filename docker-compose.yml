@@ -45,6 +45,48 @@ services:
       RAG_OBSIDIAN_NOTES_PATH: /mocs/Resource Notes
       RAG_MOCS_PATH: /mocs
 
+  # HTTP backend (rag-serve). Same image + mounts as `rag`, so it reads the same
+  # Chroma dir and config; the model/collection/reranker load once at startup.
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: personal-rag:latest
+    command: ["python", "-m", "rag.api.app"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma:/data/chroma
+      - hf-cache:/data/hf-cache
+      - ./logs:/data/logs                          # app logs, readable on the host
+      - ${RAG_VAULT_PATH:-/tmp}:/vault:ro
+      - ${RAG_PDF_BOOKS_PATH:-/tmp}:/books:ro
+      - ${RAG_PDF_RESOURCES_PATH:-/tmp}:/resources:ro
+      - ${RAG_JSON_PATH:-/tmp}:/index:ro
+      # Extractor pipeline: writable output directory for text_output/, indexed/, resources.db
+      - ${RAG_OUTPUT_PATH:-/tmp}:/extractor-out
+      # Catalog inputs (inventory JSONL) and Obsidian-generated folder (notes + MOCs) — read-only
+      - ${RAG_CATALOG_PATH:-/tmp}:/catalog:ro
+      - ${RAG_MOCS_PATH:-/tmp}:/mocs
+    environment:
+      RAG_VAULT_PATH: /vault
+      RAG_PDF_BOOKS_PATH: /books
+      RAG_PDF_RESOURCES_PATH: /resources
+      RAG_JSON_PATH: /index
+      RAG_INDEX_PATH: /data/chroma
+      RAG_LOG_PATH: /data/logs/rag.log
+      # Extractor pipeline env overrides
+      RAG_BOOKS_PATH: /books
+      RAG_RESOURCES_PATH: /resources
+      RAG_CATALOG_PATH: /catalog
+      RAG_OUTPUT_PATH: /extractor-out
+      RAG_OBSIDIAN_NOTES_PATH: /mocs/Resource Notes
+      RAG_MOCS_PATH: /mocs
+      # API: JWT secret passed through from the host .env; host/port have defaults.
+      RAG_API_JWT_SECRET: ${RAG_API_JWT_SECRET:-}
+      RAG_API_HOST: ${RAG_API_HOST:-0.0.0.0}
+      RAG_API_PORT: ${RAG_API_PORT:-8000}
+
 volumes:
   chroma:
   hf-cache:

@@ -180,6 +180,31 @@ docker compose -f docker-compose.jetson.yml run --rm rag python -m rag.query "yo
 
 The first `build-jetson` will be slow (~1.5 GB PyTorch layer). Subsequent builds reuse the cached layer.
 
+## Backend API
+
+An HTTP backend (`rag-serve`) serves semantic queries over the same index. It loads the embedding model, ChromaDB collection, and reranker **once** at startup and keeps them resident, so the internal bots (Telegram / Wiki) don't pay the CLI's per-query cold-start. It runs on the Jetson, is reached over Tailscale (internal only), and uses JWT bearer tokens for auth — there is no in-app TLS.
+
+Set `RAG_API_JWT_SECRET` (a strong secret, ≥32 bytes) in `.env`, then start the server:
+
+```bash
+make serve            # local:   .venv/bin/rag-serve  (0.0.0.0:8000)
+make docker-serve     # x86:     docker compose up api
+make jetson-serve     # Jetson:  docker compose -f docker-compose.jetson.yml up api
+```
+
+Mint a service token and make an authenticated query:
+
+```bash
+export TOKEN=$(RAG_API_JWT_SECRET=<secret> rag-token --subject my-bot)
+
+curl -s -X POST http://gpu-01:8000/query \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "How does K3s handle secrets?", "n_results": 5, "filters": {"domain": "DevOps"}}'
+```
+
+`GET /health` is unauthenticated; `GET /status`, `POST /query`, `POST /index`, and `GET /index/jobs/{id}` require the token. See [docs/api.md](docs/api.md) for every endpoint, request/response schemas, the JWT flow, and a copy-paste Python client for the bots.
+
 ## How it works
 
 ```
@@ -251,6 +276,7 @@ Pre-extracted JSON     ─┘         │
 
 | Document | Contents |
 |---|---|
+| [docs/api.md](docs/api.md) | Backend HTTP API — endpoints, JWT auth, service tokens, curl + Python client |
 | [docs/architecture.md](docs/architecture.md) | Pipeline walkthrough, streaming design, chunk IDs, metadata fields |
 | [docs/configuration.md](docs/configuration.md) | Full `config.yaml` reference, env var overrides, hardware tuning table |
 | [docs/jetson.md](docs/jetson.md) | Jetson install guide, Docker, memory budget, GPU constraints |
