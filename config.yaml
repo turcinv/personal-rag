@@ -17,6 +17,9 @@ include_extensions:
 
 exclude_dirs:
   - ".obsidian"
+  # Claude Code worktrees (.claude/worktrees/*) are near-full vault copies that
+  # double-index every note; agent/skill meta under .claude is not knowledge.
+  - ".claude"
   - ".trash"
   - "Resources/_catalog"
   # Auto-generated catalog stubs (214 Resource Notes, Books Index, Topic MOCs,
