@@ -41,12 +41,14 @@ def query(
         source=f.source if f else None,
         confidence=f.confidence if f else None,
         subdomain=f.subdomain if f else None,
+        status=f.status if f else None,
     )
 
     records = rag_query.search(
         request.query,
         n_results=request.n_results,
         filters=where,
+        tags=f.tags if f else None,
         config=state["config"],
         model=state["model"],
         collection=state["collection"],

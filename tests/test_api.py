@@ -315,6 +315,54 @@ def test_query_no_filters_passes_none(client, jwt_secret, patch_search):
     resp = client.post("/query", headers=_auth(_mint()), json={"query": "q"})
     assert resp.status_code == 200
     assert rec.last["filters"] is None
+    assert rec.last["tags"] is None      # no filters block -> tags None too
+
+
+def test_query_status_filter_maps_to_build_where(client, jwt_secret, patch_search):
+    """`status` is a native $eq clause produced by the REAL build_where."""
+    rec = patch_search(_records())
+    resp = client.post(
+        "/query",
+        headers=_auth(_mint()),
+        json={"query": "q", "filters": {"status": "processed"}},
+    )
+    assert resp.status_code == 200
+    assert rec.last["filters"] == {"status": {"$eq": "processed"}}
+
+
+def test_query_tags_forwarded_to_search_not_where(client, jwt_secret, patch_search):
+    """`tags` is a post-filter: it reaches search() as a list and never becomes a
+    where clause (filters stays None when only tags are given)."""
+    rec = patch_search(_records())
+    resp = client.post(
+        "/query",
+        headers=_auth(_mint()),
+        json={"query": "q", "filters": {"tags": ["devops", "ci"]}},
+    )
+    assert resp.status_code == 200
+    assert rec.last["tags"] == ["devops", "ci"]
+    assert rec.last["filters"] is None
+
+
+def test_query_status_and_tags_together(client, jwt_secret, patch_search):
+    """status rides in the where-dict (with domain), tags go to search()."""
+    rec = patch_search(_records())
+    resp = client.post(
+        "/query",
+        headers=_auth(_mint()),
+        json={
+            "query": "q",
+            "filters": {"domain": "DevOps", "status": "processed", "tags": ["devops"]},
+        },
+    )
+    assert resp.status_code == 200
+    assert rec.last["filters"] == {
+        "$and": [
+            {"domain": {"$eq": "DevOps"}},
+            {"status": {"$eq": "processed"}},
+        ]
+    }
+    assert rec.last["tags"] == ["devops"]
 
 
 def test_query_rerank_true_with_scores_reports_reranked(client, jwt_secret, patch_search):
