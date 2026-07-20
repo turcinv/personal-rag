@@ -1,3 +1,16 @@
+# ── Personal profile (light / Jetson) ─────────────────────────────────────────
+# Select this profile by pointing RAG_CONFIG_PATH at this file, e.g.:
+#   RAG_CONFIG_PATH=./config.personal.yaml .venv/bin/rag-index
+#   RAG_CONFIG_PATH=./config.personal.yaml .venv/bin/rag-serve
+# This is the "light" profile from the multi-corpus ADR (docs/ADR-multi-corpus-
+# profiles-and-pluggable-store.md): the personal knowledge-base corpus (vault +
+# Books/Resources), sized for the Jetson Orin Nano's 8 GB unified RAM. It is
+# currently identical in content to config.yaml (the historical default) — the
+# two files are kept in sync deliberately so config.yaml can later become a
+# thin default/symlink-equivalent without behavior change. See
+# docs/configuration.md#config-profiles for the full personal-vs-logmanager
+# comparison.
+
 # Canonical maintained checkout (the Google Drive copy at mindmap/Career Knowledge Base
 # has a divergent, stale history — 1,042 vs 2,431 notes as of 2026-06-10; reconcile before
 # ever pointing back at it).
@@ -6,8 +19,8 @@ index_path: "./chroma_db"
 log_path: "./logs/rag.log"   # app log file (rotating); override with RAG_LOG_PATH (set in Docker)
 
 # Retrieval backend. Only "chroma" exists today; "opensearch" is a future
-# backend (see docs/ADR-multi-corpus-profiles-and-pluggable-store.md, Axis 2).
-# Default — does not change behavior.
+# backend for the Logmanager wiki (see the ADR, Axis 2). Default — does not
+# change behavior.
 store: chroma
 
 # Collection name encodes the embedding model. Chunk IDs are sha256 of the chunk

@@ -1,0 +1,104 @@
+# ── Logmanager profile (heavy / x86, wiki corpus) ─────────────────────────────
+# Select this profile by pointing RAG_CONFIG_PATH at this file, e.g.:
+#   RAG_CONFIG_PATH=./config.logmanager.yaml .venv/bin/rag-index
+#   RAG_CONFIG_PATH=./config.logmanager.yaml .venv/bin/rag-serve
+# This is the "heavy" profile from the multi-corpus ADR (docs/ADR-multi-corpus-
+# profiles-and-pluggable-store.md): a second, independent corpus — the
+# Logmanager wiki — run as its own instance on x86 servers with no 8 GB
+# Jetson RAM ceiling. See docs/configuration.md#config-profiles for the full
+# personal-vs-logmanager comparison.
+#
+# Scope: MARKDOWN-ONLY. There is no book/resource catalog for the wiki, so
+# unlike config.personal.yaml this file has NO `pdf_sources`, NO
+# `json_sources`, and OMITS the `extractor:` block entirely — the whole
+# extraction/enrich/build-index/Resource-Notes/MOC-backlink pipeline is
+# personal-KB-specific and is simply not run for this corpus. The markdown
+# extractor reads frontmatter generically (`meta.get(...) or ""`), so WikiJS
+# (or whatever the wiki export uses) frontmatter indexes without any code
+# changes.
+
+# TODO: point this at the actual Logmanager wiki repo checkout once it exists
+# (e.g. a git/rsync mirror of the WikiJS export, analogous to how vault_path
+# points at the personal vault checkout today). Placeholder path below.
+vault_path: '/Users/turcinv/Documents/logmanager-wiki/'
+# Separate ChromaDB storage dir from the personal profile — the two instances
+# must never share a directory (two independent PersistentClients on one dir
+# is unsupported by Chroma and would corrupt both).
+index_path: "./chroma_db_wiki"
+log_path: "./logs/rag-logmanager.log"   # separate log file from the personal instance
+
+# Retrieval backend. Only "chroma" exists today; "opensearch" is the likely
+# production target for this corpus specifically (Logmanager already runs
+# OpenSearch) — see the ADR, Axis 2. Still "chroma" for now; unchanged
+# behavior until an OpenSearchStore ships.
+store: chroma
+
+# Collection name for the wiki corpus — must differ from the personal
+# collection_name (obsidian_markdown) both because it's a different corpus
+# and because a model swap requires a fresh collection name (chunk IDs are
+# sha256 of chunk TEXT, not the embedding — see chunking.stable_id).
+collection_name: "wiki_lm"
+
+include_extensions:
+  - ".md"
+
+exclude_dirs:
+  - ".obsidian"
+  - ".claude"
+  - ".trash"
+  - "Attachments"
+  - "Archive"
+  - "Templates"
+  - ".git"
+
+exclude_files:
+  - ".DS_Store"
+  - "CLAUDE.md"
+  - "Dashboard.md"
+  - "Home.md"
+  - "README.md"
+
+exclude_filename_patterns:
+  - "* MOC.md"
+
+chunk_max_chars: 1200
+chunk_overlap_chars: 150
+
+# PLACEHOLDER — DECISION LOCKED (do not swap to bge/e5 as part of this
+# rollout). The real, larger embedding model for the wiki corpus (per the
+# ADR table: "larger, e.g. bge-base/e5-large") is deferred until the wiki
+# corpus actually exists and can be evaluated against it — swapping in a
+# bigger model sight-unseen risks repeating the bge-small/gte-small
+# net-regression seen on the personal corpus (see config.yaml's
+# collection_name comment / tests/eval/bge_small.json, gte_small.json).
+# Keeping all-MiniLM-L6-v2 here for now so this profile is runnable
+# immediately. IMPORTANT: swapping embedding_model later requires (a) a
+# fresh collection_name (chunk IDs don't change but old vectors would
+# silently coexist under the same name with the wrong dimensionality/space)
+# and (b) setting query_instruction to match if the new model is asymmetric
+# (e.g. bge/e5 need a "Represent this sentence for searching relevant
+# passages: " query-side prefix — see query_instruction below).
+embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+query_instruction: ""
+
+# Same reranker as the personal profile for now — tunable independently per
+# profile, or disable via `rag-query --no-rerank` / `make eval ARGS=--no-rerank`
+# if it turns out to hurt on wiki-style content (e.g. very short procedural
+# pages) once there's a wiki eval set to measure against.
+reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+rerank_fetch_k: 40
+# Heavier candidate pool than the personal profile's 200 — x86 has no 8 GB
+# ceiling, so the tag-filter floor can be generous.
+tag_fetch_k: 400
+
+# Heavier settings than the personal (Jetson) profile — x86 server, no 8 GB
+# unified-RAM ceiling.
+embedding_batch_size: 64
+markdown_workers: 8        # threads for parallel MD extraction (I/O bound)
+pdf_workers: 1             # unused (no pdf_sources in this profile); kept for schema parity
+embedding_workers: 4       # CPU fallback workers (ignored when CUDA is available)
+
+# No pdf_sources, no json_sources, no extractor: block — this corpus is
+# markdown-only (see header comment). The book/resource catalog pipeline
+# (rag-extract / rag-enrich / rag-build-index / rag-build-notes / rag-link-mocs)
+# is not run against this profile.

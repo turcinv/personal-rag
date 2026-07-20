@@ -62,6 +62,20 @@ RAG_PDF_RESOURCES_PATH=/Volumes/Drive/mindmap/Resources/
 
 All other settings (chunk size, embedding model, excluded dirs) have sensible defaults in `config.yaml`.
 
+### Config profiles (multiple corpora)
+
+`config.yaml` is one profile; `config.personal.yaml` (personal KB, light/Jetson)
+and `config.logmanager.yaml` (Logmanager wiki, heavy/x86, markdown-only) are two
+more. Select a profile per instance with `RAG_CONFIG_PATH` — no code change
+needed:
+
+```bash
+RAG_CONFIG_PATH=./config.personal.yaml .venv/bin/rag-index
+RAG_CONFIG_PATH=./config.logmanager.yaml .venv/bin/rag-serve
+```
+
+Full comparison and two-instance run details: [docs/configuration.md § Config profiles](docs/configuration.md#config-profiles).
+
 ## Usage
 
 ### Index your content
@@ -261,7 +275,9 @@ Pre-extracted JSON     ─┘         │
 | `Dockerfile.jetson` | Jetson JetPack 6.2 container image (build on Jetson) |
 | `docker-compose.yml` | x86 Compose file with volume mounts |
 | `docker-compose.jetson.yml` | Jetson Compose file (`runtime: nvidia`) |
-| `config.yaml` | Vault paths, PDF sources, chunk settings |
+| `config.yaml` | Default profile — vault paths, PDF sources, chunk settings |
+| `config.personal.yaml` | Personal-KB profile (light/Jetson) — select via `RAG_CONFIG_PATH` |
+| `config.logmanager.yaml` | Logmanager wiki profile (heavy/x86, markdown-only) — select via `RAG_CONFIG_PATH` |
 | `pyproject.toml` | Package definition and `rag-index` / `rag-query` entry points |
 | `.env.example` | Template for path overrides via environment variables |
 | `Makefile` | Shortcuts for local and Docker workflows |

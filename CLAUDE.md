@@ -115,7 +115,9 @@ personal-rag/
 ├── .env                      # path overrides — never commit (see .env.example)
 ├── .env.example              # template for .env
 ├── .dockerignore
-├── config.yaml               # vault path, pdf + json sources, model, chunk settings, extractor paths
+├── config.yaml               # default config profile: vault path, pdf + json sources, model, chunk settings, extractor paths
+├── config.personal.yaml      # config profile: personal KB (light/Jetson) — select via RAG_CONFIG_PATH
+├── config.logmanager.yaml    # config profile: Logmanager wiki (heavy/x86, markdown-only) — select via RAG_CONFIG_PATH
 ├── pyproject.toml            # package definition and CLI entry points (rag + extractor)
 ├── Makefile                  # shortcuts: make install/index/query/test/extract/enrich/...
 ├── requirements-direct.txt   # direct deps only — use to regenerate lockfile
@@ -164,6 +166,24 @@ personal-rag/
   See docs/architecture.md → "Changing the embedding model".
 - Metadata fields: `path`, `title`, `heading`, `type`, `domain`, `status`, `source`, `confidence`, `tags`, `wikilinks`
 - Reindexing is incremental: chunk IDs are SHA-256 of the full chunk content, so unchanged chunks are skipped, changed/new ones embedded, and stale chunks (edited or deleted sources) pruned. The collection is never wiped. **Note:** the nav-tail/wikilink stripping changed chunk text, so the first run after those changes re-embeds the vault and prunes the old chunks (expected one-time churn).
+
+## Config profiles
+
+`config.yaml` is one **profile**; `config.personal.yaml` (personal KB, light/
+Jetson) and `config.logmanager.yaml` (Logmanager wiki, heavy/x86, markdown-
+only) are two more. `RAG_CONFIG_PATH` selects the profile per instance — no
+code change (`load_config()` → `_find_config()` in `src/rag/utils.py` already
+resolves it). Each config also sets `store: chroma` (default, forward-looking
+for a future OpenSearch backend). Run two independent instances, one per
+corpus, each with its own `RAG_CONFIG_PATH`:
+
+```bash
+RAG_CONFIG_PATH=./config.personal.yaml .venv/bin/rag-index
+RAG_CONFIG_PATH=./config.logmanager.yaml .venv/bin/rag-serve
+```
+
+Full comparison table + two-instance run details: docs/configuration.md →
+"Config profiles". Design rationale: docs/ADR-multi-corpus-profiles-and-pluggable-store.md.
 
 ## Deployment (Jetson Orin Nano)
 
@@ -247,6 +267,7 @@ Summary, ranked by impact/effort — do these in order, and build the eval set (
 | Document | Contents |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Pipeline walkthrough, chunk IDs, ChromaDB state, telemetry workaround |
-| [docs/configuration.md](docs/configuration.md) | All `config.yaml` fields, env var overrides, hardware tuning table |
+| [docs/configuration.md](docs/configuration.md) | All `config.yaml` fields, env var overrides, hardware tuning table, config profiles |
 | [docs/jetson.md](docs/jetson.md) | Jetson-specific install, Docker, memory budget, IPC constraints |
 | [docs/api.md](docs/api.md) | HTTP backend: endpoints, JWT auth, `rag-serve`/`rag-token`, `make serve`/`jetson-serve`, client examples |
+| [docs/ADR-multi-corpus-profiles-and-pluggable-store.md](docs/ADR-multi-corpus-profiles-and-pluggable-store.md) | Design decision behind config profiles (Axis 1) + the pluggable `RetrievalStore` (Axis 2) |

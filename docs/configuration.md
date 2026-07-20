@@ -30,6 +30,8 @@ exclude_files:
 exclude_filename_patterns:
   - "* MOC.md"
 
+store: chroma
+
 chunk_max_chars: 1200
 chunk_overlap_chars: 150
 embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
@@ -56,6 +58,7 @@ json_sources:
 | `index_path` | `./chroma_db` | ChromaDB persistent storage directory. |
 | `log_path` | `./logs/rag.log` | App log file (rotating, 5 MB × 3). Console output is unaffected. |
 | `log_db_path` | `<log_path>.sqlite` | Structured SQLite log DB (`logs` table). Defaults alongside `log_path`. |
+| `store` | `chroma` | Retrieval backend selector. Only `chroma` exists today (`opensearch` is a planned future backend for the Logmanager wiki corpus — see [ADR-multi-corpus-profiles-and-pluggable-store.md](ADR-multi-corpus-profiles-and-pluggable-store.md)). Adding this key is behavior-preserving; omitting it also defaults to `chroma`. |
 | `collection_name` | `obsidian_markdown` | ChromaDB collection name. |
 | `exclude_dirs` | see above | Vault subdirectories to skip during indexing. `Resources/Generated` holds auto-generated catalog stubs (Resource Notes, Topic MOCs, Learning Paths) whose underlying book/resource content is already fully indexed via `json_sources`. |
 | `exclude_files` | `.DS_Store`, `CLAUDE.md`, `Dashboard.md`, `Home.md`, `README.md` | Filenames to skip regardless of directory (e.g. vault hub/navigation pages). |
@@ -102,3 +105,67 @@ RAG_PDF_RESOURCES_PATH=/Volumes/Drive/mindmap/Resources/
 | Jetson Orin Nano Super (8 GB) | 1200 | 16 | 1 | 1 |
 | Desktop (16+ GB RAM, no GPU) | 1800 | 32 | 4 | 2 |
 | Desktop (NVIDIA GPU, 8+ GB VRAM) | 1800 | 64 | 4 | 2 |
+
+## Config profiles
+
+Full design context: [ADR-multi-corpus-profiles-and-pluggable-store.md](ADR-multi-corpus-profiles-and-pluggable-store.md).
+
+`config.yaml` is one **profile** among several. A profile is just a config file
+selected at deploy/run time via `RAG_CONFIG_PATH` (see the env var table above) —
+`load_config()`'s `_find_config()` already resolves `RAG_CONFIG_PATH` with no
+fallback-to-default when set, so pointing it at a different file requires **no
+code change**. Two profiles ship today, run as two independent instances:
+
+| Profile | File | Corpus | Hardware |
+|---|---|---|---|
+| **personal** (light) | `config.personal.yaml` | Personal KB: Obsidian vault + Books/Resources (PDF + pre-extracted JSON) | Jetson Orin Nano (8 GB) |
+| **logmanager** (heavy) | `config.logmanager.yaml` | Logmanager wiki, markdown-only | x86 server, no RAM ceiling |
+| *(default)* | `config.yaml` | Same corpus/content as `config.personal.yaml` today (historical default) | macOS/x86 dev, Jetson |
+
+### Key knob differences
+
+| Knob | `config.personal.yaml` | `config.logmanager.yaml` |
+|---|---|---|
+| `embedding_model` | `all-MiniLM-L6-v2` | `all-MiniLM-L6-v2` (**placeholder** — see file comment; a larger model is deferred until the wiki corpus exists and can be evaluated, to avoid repeating the bge-small/gte-small net-regression seen on the personal corpus) |
+| `reranker_model` / `rerank_fetch_k` | ms-marco-MiniLM-L-6 / 20 | same model / 40 (tunable, or disable with `--no-rerank` if it hurts) |
+| `tag_fetch_k` | 200 | 400 |
+| `embedding_batch_size` | 16 | 64 |
+| `*_workers` | 1 | `markdown_workers: 8`, `embedding_workers: 4` |
+| `collection_name` | `obsidian_markdown` | `wiki_lm` |
+| `index_path` | `./chroma_db` | `./chroma_db_wiki` |
+| `vault_path` | personal vault checkout | wiki repo checkout (placeholder path — update once the wiki checkout exists) |
+| `pdf_sources` / `json_sources` | both set (Books/Resources + pre-extracted JSON) | **absent** — wiki corpus is markdown-only |
+| `extractor:` block | present (book/resource pipeline paths) | **omitted** — the extraction/enrich/build-index/Resource-Notes/MOC-backlink pipeline is personal-KB-specific and is not run for the wiki |
+| `store` | `chroma` | `chroma` |
+
+### Running two instances
+
+Each instance is a normal `rag-index` / `rag-serve` process pointed at its own
+profile via `RAG_CONFIG_PATH`. They never share `index_path` or
+`collection_name`, so they can run concurrently on the same or different hosts
+without interfering with each other:
+
+```bash
+# Personal KB instance (Jetson-sized)
+RAG_CONFIG_PATH=./config.personal.yaml .venv/bin/rag-index
+RAG_CONFIG_PATH=./config.personal.yaml .venv/bin/rag-serve
+
+# Logmanager wiki instance (x86, markdown-only)
+RAG_CONFIG_PATH=./config.logmanager.yaml .venv/bin/rag-index
+RAG_CONFIG_PATH=./config.logmanager.yaml .venv/bin/rag-serve
+```
+
+`RAG_VAULT_PATH` / `RAG_INDEX_PATH` / `RAG_JSON_PATH` / etc. still apply as
+per-instance overrides on top of whichever profile `RAG_CONFIG_PATH` selects —
+useful for Docker Compose deployments where each instance's `.env` sets the
+mount paths but shares the same profile file baked into the image.
+
+### `store` key
+
+`store: chroma` selects the retrieval backend. It exists in all three config
+files today (`config.yaml`, `config.personal.yaml`, `config.logmanager.yaml`)
+and defaults to `chroma` when absent — adding it changes no behavior. It is
+forward-looking: the ADR's Axis 2 introduces a `RetrievalStore` abstraction so
+an `opensearch` backend can be added later (OpenSearch is the likely production
+target for the Logmanager wiki chatbot) without an engine rewrite. No other
+backend exists yet.
