@@ -28,13 +28,19 @@ class StatusResponse(BaseModel):
 
 class QueryFilters(BaseModel):
     """Optional metadata constraints mapped to ``query.build_where``. The JSON
-    field ``type`` maps to build_where's ``type_`` parameter in the handler."""
+    field ``type`` maps to build_where's ``type_`` parameter in the handler.
+
+    ``status`` is a native ``$eq`` clause (build_where); ``tags`` is a post-filter
+    applied inside ``query.search`` (exact, case-insensitive membership; multiple
+    tags = AND) — Chroma can't filter the comma-joined tags string natively."""
 
     domain: Optional[str] = None
     subdomain: Optional[str] = None
     type: Optional[str] = None
     source: Optional[str] = None
     confidence: Optional[str] = None
+    status: Optional[str] = None
+    tags: Optional[list[str]] = None
 
 
 class QueryRequest(BaseModel):

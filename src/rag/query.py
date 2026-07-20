@@ -27,8 +27,14 @@ _RERANKER_CACHE: dict = {}
 DEFAULT_RERANKER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 
-def build_where(domain=None, type_=None, source=None, confidence=None, subdomain=None):
-    """Build a ChromaDB metadata filter from optional field constraints."""
+def build_where(domain=None, type_=None, source=None, confidence=None, subdomain=None, status=None):
+    """Build a ChromaDB metadata filter from optional field constraints.
+
+    ``status`` is a single scalar in chunk metadata, so it uses a native ``$eq``
+    clause here. ``tags`` is deliberately NOT handled here — tags are stored as a
+    comma-joined string (Chroma 0.6.3 has weak array support), so tag filtering is
+    a post-filter over retrieved records in :func:`search`, never a where clause.
+    """
     filters = []
     if domain:
         filters.append({"domain": {"$eq": domain}})
@@ -40,6 +46,8 @@ def build_where(domain=None, type_=None, source=None, confidence=None, subdomain
         filters.append({"source": {"$eq": source}})
     if confidence:
         filters.append({"confidence": {"$eq": confidence}})
+    if status:
+        filters.append({"status": {"$eq": status}})
     if not filters:
         return None
     if len(filters) == 1:
@@ -83,6 +91,7 @@ def search(
     n_results=8,
     *,
     filters=None,
+    tags=None,
     config=None,
     model=None,
     collection=None,
@@ -102,6 +111,13 @@ def search(
     ``rerank`` retrieves a wider dense pool (``rerank_fetch_k``, default 20) and
     reorders it to the top ``n_results`` with a cross-encoder. ``hybrid`` (BM25
     fusion) is Phase 3d — accepted but not yet wired.
+
+    ``tags`` is a list of tag names applied as a post-filter (exact, case-
+    insensitive membership; multiple tags = AND) — Chroma can't filter the
+    comma-joined ``tags`` metadata string natively. When set, the dense pool is
+    widened to ``tag_fetch_k`` (default 200) so the post-filter has candidates to
+    keep; filtering runs before rerank/trim, so a very rare tag may still
+    under-return within that pool (best-effort).
     """
     if config is None:
         config = load_config()
@@ -121,6 +137,11 @@ def search(
     # the cross-encoder pick the final n_results from it. (hybrid is Phase 3d.)
     rerank_fetch_k = int(config.get("rerank_fetch_k", 20))
     fetch_k = max(n_results, rerank_fetch_k) if rerank else n_results
+    # Tags are post-filtered (not a native where clause), so widen the dense pool
+    # to give the post-filter enough candidates to keep. Best-effort: a very rare
+    # tag may still under-return within this pool.
+    if tags:
+        fetch_k = max(fetch_k, int(config.get("tag_fetch_k", 200)))
 
     query_kwargs = dict(
         query_embeddings=[query_embedding],
@@ -140,6 +161,23 @@ def search(
         for i, (doc, meta, dist) in enumerate(zip(docs, metas, distances), start=1)
     ]
 
+    # Tag post-filter (before rerank so the cross-encoder scores the filtered
+    # pool). Tags live as a comma-joined metadata string; keep a record only if
+    # every requested tag is an exact member of its tag set (case-insensitive) —
+    # so "ci" must not match "ci-cd", and multiple tags are AND (subset test).
+    # Records with no/empty tags metadata never raise and are dropped.
+    if tags:
+        want = {t.strip().lower() for t in tags if t and t.strip()}
+        if want:
+            records = [
+                r for r in records
+                if want <= {
+                    s.strip().lower()
+                    for s in (r["metadata"].get("tags") or "").split(",")
+                    if s.strip()
+                }
+            ]
+
     # Cross-encoder rerank: score each (raw query, chunk) pair and reorder, then
     # trim to n_results. The reranker sees the natural query — never the
     # embedding-side instruction prefix.
@@ -155,8 +193,8 @@ def search(
     else:
         records = records[:n_results]
 
-    logger.info("query=%r n=%d filter=%s rerank=%s -> %d results",
-                query, n_results, filters, rerank, len(records))
+    logger.info("query=%r n=%d filter=%s tags=%s rerank=%s -> %d results",
+                query, n_results, filters, tags, rerank, len(records))
     return records
 
 
@@ -171,6 +209,8 @@ def main():
   rag-query "testing" --domain "Software Engineering" --subdomain "Python & Backend Development"
   rag-query "deployment" --domain DevOps --confidence high
   rag-query "book recommendations" --source pdf --type book
+  rag-query "kubernetes" --tag devops -n 5
+  rag-query "deployment" --status processed
   rag-query "RAG pipeline" --json
 """,
     )
@@ -187,6 +227,11 @@ def main():
                         help="Filter by source metadata (e.g. pdf)")
     parser.add_argument("--confidence", default=None,
                         help="Filter by confidence metadata (e.g. high, medium)")
+    parser.add_argument("--status", default=None,
+                        help="Filter by status metadata (native $eq, e.g. processed)")
+    parser.add_argument("--tag", action="append", default=None, metavar="TAG",
+                        help="Keep only chunks carrying this tag (exact match, "
+                             "case-insensitive). Repeatable; multiple --tag = AND.")
     parser.add_argument("--json", dest="output_json", action="store_true",
                         help="Output results as a JSON array")
     parser.add_argument("--no-rerank", dest="rerank", action="store_false",
@@ -198,8 +243,10 @@ def main():
     config = load_config()
     setup_logging(config, console=False)  # log to file only; results print to stdout
 
-    where = build_where(args.domain, args.type_, args.source, args.confidence, args.subdomain)
-    records = search(query, args.n_results, filters=where, config=config, rerank=args.rerank)
+    where = build_where(args.domain, args.type_, args.source, args.confidence, args.subdomain,
+                        status=args.status)
+    records = search(query, args.n_results, filters=where, tags=args.tag, config=config,
+                     rerank=args.rerank)
 
     if args.output_json:
         output = [
@@ -211,8 +258,15 @@ def main():
 
     print()
     print("Query: " + query)
-    if where:
-        print("Filter: " + json.dumps(where))
+    if where or args.tag:
+        # `where` already carries status (via build_where); tags are a separate
+        # post-filter, so print them explicitly alongside the where-dict.
+        parts = []
+        if where:
+            parts.append(json.dumps(where))
+        if args.tag:
+            parts.append("tags=" + json.dumps(args.tag))
+        print("Filter: " + "  ".join(parts))
     print()
 
     for i, r in enumerate(records, start=1):
