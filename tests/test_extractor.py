@@ -11,7 +11,12 @@ from extractor.analyze_files import detect_type, pdf_has_text, epub_has_text
 from extractor.build_index_documents import split_list, to_int, merge
 from extractor.build_vault_index import parse_frontmatter, norm_tags
 from extractor.dup_detect import shingles, jaccard
-from extractor.extract_text import detect_type as ext_detect_type, _strip_html
+from extractor.extract_text import (
+    detect_type as ext_detect_type,
+    _strip_html,
+    _cached_extraction_ok,
+    MIN_USABLE_CHARS,
+)
 
 
 # ── extract_text ─────────────────────────────────────────────────────────────
@@ -45,6 +50,80 @@ def test_strip_html_removes_script():
     result = _strip_html("<script>alert(1)</script><p>content</p>")
     assert "alert" not in result
     assert "content" in result
+
+
+# ── extract_text quality gate (_cached_extraction_ok) ─────────────────────────
+
+def _write_cache(tmp_path, name="book.json", **fields):
+    p = tmp_path / name
+    p.write_text(json.dumps(fields), encoding="utf-8")
+    return str(p)
+
+
+def test_cached_ok_good_cache(tmp_path):
+    """Non-empty text well above the threshold, no OCR → good cache (skip)."""
+    out = _write_cache(
+        tmp_path,
+        text="real content " * 100,
+        total_chars=1300,
+        text_layer_chars=1300,
+        ocr_used=False,
+        ocr_chars=0,
+    )
+    assert _cached_extraction_ok(out) is True
+
+
+def test_cached_ok_empty_text_reextract(tmp_path):
+    """Empty text → caught by the no-non-empty-text rule (re-extract)."""
+    out = _write_cache(
+        tmp_path,
+        text="",
+        total_chars=0,
+        text_layer_chars=0,
+        ocr_used=False,
+        ocr_chars=0,
+    )
+    assert _cached_extraction_ok(out) is False
+
+
+def test_cached_ok_failed_ocr_signature_reextract(tmp_path):
+    """OCR attempted but produced nothing and no usable text layer → re-extract.
+
+    A whitespace-only text is non-empty-looking but strips to empty; combined with
+    the failed-OCR signature this is exactly the pre-tesseract scanned-PDF case.
+    """
+    out = _write_cache(
+        tmp_path,
+        text="   \n  ",
+        total_chars=6,
+        text_layer_chars=3,
+        ocr_used=True,
+        ocr_chars=0,
+    )
+    assert _cached_extraction_ok(out) is False
+
+
+def test_cached_ok_corrupt_json_reextract(tmp_path):
+    """Unreadable / non-JSON file, and a nonexistent path → re-extract."""
+    bad = tmp_path / "corrupt.json"
+    bad.write_bytes(b"\x00\x01 not json {{{")
+    assert _cached_extraction_ok(str(bad)) is False
+    assert _cached_extraction_ok(str(tmp_path / "does-not-exist.json")) is False
+
+
+def test_cached_ok_short_but_valid_is_skipped(tmp_path):
+    """A genuinely short but real text-layer document must be SKIPPED, not
+    re-extracted — total_chars below MIN_USABLE_CHARS is NOT a standalone trigger."""
+    out = _write_cache(
+        tmp_path,
+        text="A short but perfectly real note.",
+        total_chars=120,
+        text_layer_chars=120,
+        ocr_used=False,
+        ocr_chars=0,
+    )
+    assert 120 < MIN_USABLE_CHARS  # guard: the case is actually below the threshold
+    assert _cached_extraction_ok(out) is True
 
 
 # ── analyze_files ─────────────────────────────────────────────────────────────

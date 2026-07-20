@@ -9,6 +9,13 @@ Strategy:
 
 Output: one JSON file per book in text_output/, containing metadata + full text.
 A manifest.json summarizes the whole run.
+
+Resume: an existing output JSON is skipped only if it passes a content quality gate
+(see _cached_extraction_ok) — an empty/corrupt/failed-OCR cache is re-extracted
+instead of blindly skipped. Pass --force (-f) to bypass the cache and re-extract
+everything.
+
+Usage: rag-extract [directory] [filename] [--force]
 """
 import json
 import os
@@ -25,6 +32,11 @@ import fitz  # PyMuPDF
 OCR_CHAR_THRESHOLD = 5
 OCR_DPI = 300
 OCR_LANG = "eng"
+
+# Minimum chars for the failed-OCR quality gate (see _cached_extraction_ok). Bounds
+# ONLY the failed-OCR branch — never used as a standalone "too short" test, so a
+# legitimately short but real text-layer document is still a good cache.
+MIN_USABLE_CHARS = 200
 
 # Module-level log path, set in main() before any calls to log().
 _log_path = None
@@ -197,15 +209,66 @@ def extract_md(path):
     return full, meta
 
 
+def _cached_extraction_ok(out_path):
+    """Return True if the cached extraction JSON at ``out_path`` looks usable, so the
+    resume logic can safely skip re-extracting it.
+
+    Returns False (→ re-extract) only for the failure modes a blind existence check
+    misses: an unreadable/corrupt JSON, an extraction with no real text, or the
+    failed-OCR signature (OCR was attempted but produced nothing and there is no
+    usable text layer — e.g. a scanned PDF extracted before Tesseract was installed).
+
+    Deliberately does NOT reject a document merely for being short: a genuine
+    non-empty text layer is always a good cache, even below MIN_USABLE_CHARS —
+    otherwise short-but-real docs would re-extract on every run. Never raises.
+    """
+    try:
+        with open(out_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+
+    # No usable text at all → failed/empty extraction.
+    if not str(data.get("text") or "").strip():
+        return False
+
+    # Failed-OCR signature: OCR was used but yielded nothing, and there is no
+    # meaningful embedded text layer to fall back on.
+    def _to_int(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
+
+    if (
+        data.get("ocr_used") is True
+        and _to_int(data.get("ocr_chars")) == 0
+        and _to_int(data.get("text_layer_chars")) < MIN_USABLE_CHARS
+    ):
+        return False
+
+    return True
+
+
 def main():
     global _log_path
+
+    # Strip --force/-f up front so it isn't mistaken for the directory or the
+    # single-file target in the positional parsing below.
+    force = False
+    for flag in ("--force", "-f"):
+        if flag in sys.argv[1:]:
+            force = True
+            sys.argv = [a for a in sys.argv if a != flag]
 
     # First CLI arg may be the target directory.
     if len(sys.argv) > 1 and os.path.isdir(sys.argv[1]):
         DIR = os.path.abspath(sys.argv[1])
         sys.argv.pop(1)
     elif len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
-        print("Usage: rag-extract [directory] [filename]")
+        print("Usage: rag-extract [directory] [filename] [--force]")
         sys.exit(0)
     else:
         DIR = os.getcwd()
@@ -238,10 +301,14 @@ def main():
         path = os.path.join(DIR, fname)
         out_name = os.path.splitext(fname)[0] + ".json"
         out_path = os.path.join(OUT_DIR, out_name)
-        if os.path.exists(out_path):
-            log(f"({idx}/{total}) SKIP already extracted: {fname}")
-            manifest.append({"filename": fname, "status": "cached"})
-            continue
+        if not force and os.path.exists(out_path):
+            if _cached_extraction_ok(out_path):
+                log(f"({idx}/{total}) SKIP already extracted: {fname}")
+                manifest.append({"filename": fname, "status": "cached"})
+                continue
+            # Present but incomplete (empty/corrupt/failed-OCR) — fall through and
+            # re-extract, overwriting the stale JSON.
+            log(f"({idx}/{total}) RE-EXTRACT (incomplete cache): {fname}")
         ftype = detect_type(path)
         t0 = time.time()
         try:
