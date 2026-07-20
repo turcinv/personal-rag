@@ -15,7 +15,7 @@ logger = logging.getLogger("rag")
 log = logger.info  # configured by setup_logging() in indexer.main()
 
 
-def embed_and_upsert(model, device, docs, ids, metas, embed_batch_size, collection):
+def embed_and_upsert(model, device, docs, ids, metas, embed_batch_size, store):
     """Embed in small batches and upsert immediately; never accumulates in RAM."""
     n = len(docs)
     n_batches = (n + embed_batch_size - 1) // embed_batch_size
@@ -24,7 +24,7 @@ def embed_and_upsert(model, device, docs, ids, metas, embed_batch_size, collecti
         b_ids   = ids[i:i + embed_batch_size]
         b_metas = metas[i:i + embed_batch_size]
         embeddings = model.encode(b_docs, normalize_embeddings=True, batch_size=embed_batch_size)
-        collection.upsert(ids=b_ids, documents=b_docs, embeddings=embeddings.tolist(), metadatas=b_metas)
+        store.upsert(ids=b_ids, embeddings=embeddings.tolist(), docs=b_docs, metas=b_metas)
         del embeddings
         if device == "cuda":
             torch.cuda.empty_cache()
@@ -33,7 +33,7 @@ def embed_and_upsert(model, device, docs, ids, metas, embed_batch_size, collecti
 
 
 def index_file_chunks(ids, docs, metas, existing_meta, seen_ids,
-                      model, device, embed_batch, collection):
+                      model, device, embed_batch, store):
     """Incrementally index one file's chunks against the existing index.
 
     Records every chunk ID in ``seen_ids`` (used afterwards to prune stale
@@ -43,8 +43,8 @@ def index_file_chunks(ids, docs, metas, existing_meta, seen_ids,
       - existing ID, metadata same    -> skip
 
     Embeddings depend only on the chunk body, so a metadata-only edit (e.g. a
-    note's frontmatter or a heading) is applied with collection.update without
-    paying to re-embed. Returns (n_new, n_updated, n_total)."""
+    note's frontmatter or a heading) is applied with store.update_metadata
+    without paying to re-embed. Returns (n_new, n_updated, n_total)."""
     seen_ids.update(ids)
     new_i = [k for k, cid in enumerate(ids) if cid not in existing_meta]
     upd_i = [k for k, cid in enumerate(ids)
@@ -53,10 +53,10 @@ def index_file_chunks(ids, docs, metas, existing_meta, seen_ids,
     if new_i:
         embed_and_upsert(model, device,
                          [docs[k] for k in new_i], [ids[k] for k in new_i],
-                         [metas[k] for k in new_i], embed_batch, collection)
+                         [metas[k] for k in new_i], embed_batch, store)
     if upd_i:
-        collection.update(ids=[ids[k] for k in upd_i],
-                          metadatas=[metas[k] for k in upd_i])
+        store.update_metadata(ids=[ids[k] for k in upd_i],
+                              metas=[metas[k] for k in upd_i])
     return len(new_i), len(upd_i), len(ids)
 
 
@@ -72,7 +72,7 @@ def _index_status(n_new, n_upd, n_total):
     return f"unchanged, {n_total} chunks"
 
 
-def run_source(source, existing_meta, seen_ids, model, device, embed_batch, collection):
+def run_source(source, existing_meta, seen_ids, model, device, embed_batch, store):
     """Run one ``Source``'s files through the incremental engine.
 
     Returns (n_total, n_new, n_updated) for the source. Extraction runs in a
@@ -96,7 +96,7 @@ def run_source(source, existing_meta, seen_ids, model, device, embed_batch, coll
                 continue
             n_new, n_upd, n_total = index_file_chunks(
                 ids, docs, metas, existing_meta, seen_ids,
-                model, device, embed_batch, collection,
+                model, device, embed_batch, store,
             )
             log(f"  [{idx}/{n}] {f.name}  ({_index_status(n_new, n_upd, n_total)})")
             s_total += n_total

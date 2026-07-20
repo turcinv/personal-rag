@@ -1,10 +1,11 @@
 """FastAPI application + lifespan — the core value of the backend.
 
-On startup the ``lifespan`` handler loads the embedding model, ChromaDB
-collection, and cross-encoder reranker EXACTLY ONCE (via the cached getters in
-:mod:`rag.query` — never reimplemented here) and stashes them on
-``app.state.rag``. Routes read them through :func:`rag.api.deps.get_rag_state`,
-so no request ever pays the model cold-start cost.
+On startup the ``lifespan`` handler loads the embedding model, opens the
+retrieval store (see :mod:`rag.store`), and loads the cross-encoder reranker
+EXACTLY ONCE (via the cached getters in :mod:`rag.query` — never reimplemented
+here) and stashes them on ``app.state.rag``. Routes read them through
+:func:`rag.api.deps.get_rag_state`, so no request ever pays the model
+cold-start cost.
 
 Entry point: ``rag-serve`` → :func:`run`. Also runnable as
 ``python -m rag.api.app`` (used by the compose ``command:``).
@@ -41,27 +42,27 @@ async def lifespan(app: FastAPI):
     logger.info("API startup: loading embedding model %s", embedding_model)
     model = query.get_model(embedding_model)
 
-    logger.info("API startup: opening collection")
-    collection = query.open_collection(config)
+    logger.info("API startup: opening store")
+    store = query.open_store(config)
 
     logger.info("API startup: loading reranker %s", reranker_model)
     reranker = query.get_reranker(reranker_model)
 
-    count = collection.count()
+    count = store.count()
     if count == 0:
         logger.warning(
             "API startup: collection %r is EMPTY (0 chunks). Serving anyway — an "
             "empty collection is a real state, not a crash. Run rag-index / "
             "POST /index to populate it.",
-            collection.name,
+            store.name,
         )
     else:
-        logger.info("API startup: collection %r holds %d chunks", collection.name, count)
+        logger.info("API startup: collection %r holds %d chunks", store.name, count)
 
     app.state.rag = {
         "config": config,
         "model": model,
-        "collection": collection,
+        "store": store,
         "reranker": reranker,
         "embedding_model": embedding_model,
         "reranker_model": reranker_model,

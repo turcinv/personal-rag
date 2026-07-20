@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .utils import load_config, setup_logging
-from .query import build_where, get_model, open_collection, search
+from .query import build_where, get_model, open_store, search
 
 logger = logging.getLogger("rag")
 
@@ -77,8 +77,8 @@ def evaluate(golden, *, n=10, config=None, collection_name=None,
         config = load_config()
     model_name = config.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
     model = get_model(model_name)
-    collection = open_collection(config, collection_name)
-    count = collection.count()
+    store = open_store(config, collection_name)
+    count = store.count()
     if count == 0:
         logger.warning("Collection %r is EMPTY — recall will be 0. Build an index first.",
                        collection_name or config.get("collection_name"))
@@ -89,7 +89,7 @@ def evaluate(golden, *, n=10, config=None, collection_name=None,
         filters = None  # golden queries are unfiltered by design
         records = search(
             q, n, filters=filters, config=config, model=model,
-            collection=collection, rerank=rerank, hybrid=hybrid,
+            store=store, rerank=rerank, hybrid=hybrid,
         )
         rank = first_hit_rank(records, expected)
         per_query.append({

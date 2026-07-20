@@ -13,7 +13,7 @@ import logging
 
 from .utils import load_config, setup_logging  # sets telemetry env var and patches posthog before chromadb loads
 
-import chromadb
+from .store import get_store
 from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger("rag")
@@ -71,19 +71,14 @@ def get_reranker(model_name):
     return _RERANKER_CACHE[model_name]
 
 
-def get_client(config):
-    """Open the persistent ChromaDB client at the configured index path."""
-    index_path = config.get("index_path", "./chroma_db")
-    return chromadb.PersistentClient(
-        path=index_path,
-        settings=chromadb.Settings(anonymized_telemetry=False),
-    )
+def open_store(config, collection_name=None):
+    """Open the configured ``RetrievalStore`` (or the collection-name override).
 
-
-def open_collection(config, collection_name=None):
-    """Open the persistent ChromaDB collection named in config (or the override)."""
-    name = collection_name or config.get("collection_name", "obsidian_markdown")
-    return get_client(config).get_collection(name)
+    Does not eagerly create anything — for Chroma this defers to
+    ``get_collection`` on first use, so querying a collection that has never
+    been indexed still raises, exactly like the historical ``open_collection``.
+    """
+    return get_store(config, collection_name)
 
 
 def search(
@@ -94,7 +89,7 @@ def search(
     tags=None,
     config=None,
     model=None,
-    collection=None,
+    store=None,
     collection_name=None,
     rerank=False,
     hybrid=False,
@@ -106,7 +101,7 @@ def search(
     distance) and ``rank`` (1-based). ``filters`` is a prebuilt ChromaDB
     where-dict (see :func:`build_where`).
 
-    ``model`` / ``collection`` may be passed in to avoid reloading them between
+    ``model`` / ``store`` may be passed in to avoid reloading them between
     calls; otherwise they are resolved from ``config`` (loaded if omitted).
     ``rerank`` retrieves a wider dense pool (``rerank_fetch_k``, default 20) and
     reorders it to the top ``n_results`` with a cross-encoder. ``hybrid`` (BM25
@@ -124,8 +119,8 @@ def search(
     model_name = config.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
     if model is None:
         model = get_model(model_name)
-    if collection is None:
-        collection = open_collection(config, collection_name)
+    if store is None:
+        store = open_store(config, collection_name)
 
     # Config-driven query prefix (e.g. bge's retrieval instruction). Empty for
     # models that need none (MiniLM, gte); the passage/index side never prefixes.
@@ -143,22 +138,11 @@ def search(
     if tags:
         fetch_k = max(fetch_k, int(config.get("tag_fetch_k", 200)))
 
-    query_kwargs = dict(
-        query_embeddings=[query_embedding],
-        n_results=fetch_k,
-        include=["documents", "metadatas", "distances"],
-    )
-    if filters:
-        query_kwargs["where"] = filters
-
-    results = collection.query(**query_kwargs)
-    docs = results["documents"][0]
-    metas = results["metadatas"][0]
-    distances = results["distances"][0]
+    hits = store.query(query_embedding, fetch_k, filters)
 
     records = [
-        {"document": doc, "metadata": meta, "distance": dist, "rank": i}
-        for i, (doc, meta, dist) in enumerate(zip(docs, metas, distances), start=1)
+        {"document": hit["document"], "metadata": hit["metadata"], "distance": hit["distance"], "rank": i}
+        for i, hit in enumerate(hits, start=1)
     ]
 
     # Tag post-filter (before rerank so the cross-encoder scores the filtered

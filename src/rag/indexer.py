@@ -12,11 +12,11 @@ from pathlib import Path
 from .utils import load_config, setup_logging  # sets telemetry env var and patches posthog before chromadb loads
 
 import torch
-import chromadb
 from sentence_transformers import SentenceTransformer
 
 from .extractors import iter_sources
 from .indexing import run_source
+from .store import get_store
 
 
 logger = logging.getLogger("rag")
@@ -35,7 +35,6 @@ def main():
     setup_logging(config)
 
     vault_path      = Path(config["vault_path"]).expanduser().resolve()
-    index_path      = config.get("index_path", "./chroma_db")
     collection_name = args.collection or config.get("collection_name", "obsidian_markdown")
     max_chars       = int(config.get("chunk_max_chars", 1200))
     overlap         = int(config.get("chunk_overlap_chars", 150))
@@ -60,25 +59,20 @@ def main():
     model = SentenceTransformer(model_name, device=device)
     log("Model loaded.")
 
-    client = chromadb.PersistentClient(
-        path=index_path,
-        settings=chromadb.Settings(anonymized_telemetry=False),
-    )
+    store = get_store(config, collection_name)
     # All embeddings are L2-normalized (indexing.py), so cosine/dot/L2 rank
     # identically — we standardize on a single cosine collection. Chroma ignores
     # this metadata for a collection that already exists, so pointing at a
     # pre-existing collection never forces a rebuild; only freshly created
     # collections get hnsw:space=cosine.
-    coll_kwargs = {"name": collection_name, "metadata": {"hnsw:space": "cosine"}}
-    collection = client.get_or_create_collection(**coll_kwargs)
+    store.ensure(collection_name)
 
     # Incremental indexing: snapshot the IDs + metadata already in the index.
     # Chunk IDs are content-hashed, so unchanged body text keeps the same ID;
     # each chunk is then embedded (new), metadata-refreshed (same body, changed
     # metadata), or skipped (identical). Every ID seen this run is recorded so
     # leftovers (edited or deleted sources) can be pruned at the end.
-    _snap = collection.get(include=["metadatas"])
-    existing_meta = dict(zip(_snap["ids"], _snap["metadatas"]))
+    existing_meta = store.snapshot()
     existing_ids = set(existing_meta)
     seen_ids = set()
     log(f"Existing chunks in index: {len(existing_ids)}")
@@ -110,7 +104,7 @@ def main():
 
     for source in sources:
         s_total, s_new, s_upd = run_source(
-            source, existing_meta, seen_ids, model, device, embed_batch, collection,
+            source, existing_meta, seen_ids, model, device, embed_batch, store,
         )
         total_chunks  += s_total
         total_new     += s_new
@@ -121,7 +115,7 @@ def main():
     if stale:
         stale_list = list(stale)
         for i in range(0, len(stale_list), 500):
-            collection.delete(ids=stale_list[i:i + 500])
+            store.delete(stale_list[i:i + 500])
         log(f"Removed {len(stale)} stale chunks (edited or deleted sources)")
 
     log(f"\nIndexing complete. Index now holds {len(seen_ids)} chunks "

@@ -2,7 +2,7 @@
 
 ``GET /health`` is unauthenticated; ``POST /query`` and ``GET /status`` are
 JWT-protected. Retrieval reuses ``rag.query`` (build_where + search) against the
-model/collection/reranker loaded once at startup — never reloaded per request.
+model/store/reranker loaded once at startup — never reloaded per request.
 """
 
 from fastapi import APIRouter, Depends
@@ -27,11 +27,11 @@ def query(
     state: dict = Depends(get_rag_state),
     _claims: dict = Depends(require_jwt),
 ) -> QueryResponse:
-    """Semantic retrieval over the once-loaded collection.
+    """Semantic retrieval over the once-loaded store.
 
     Maps ``filters`` → ``query.build_where`` (JSON ``type`` → the ``type_`` param;
     build_where returns None when everything is falsy) and calls ``query.search``
-    with the model/collection/config from app state. Returns search()'s native
+    with the model/store/config from app state. Returns search()'s native
     records inside a small envelope. ``reranked`` is True only when reranking was
     requested AND actually applied (a non-empty dense pool produced scores)."""
     f = request.filters
@@ -51,7 +51,7 @@ def query(
         tags=f.tags if f else None,
         config=state["config"],
         model=state["model"],
-        collection=state["collection"],
+        store=state["store"],
         rerank=request.rerank,
     )
 
@@ -68,12 +68,12 @@ def query(
 def status(
     state: dict = Depends(get_rag_state), _claims: dict = Depends(require_jwt)
 ) -> StatusResponse:
-    """Report live ChromaDB state: is the index actually populated? Reads the
-    once-loaded collection from app state and counts chunks."""
-    collection = state["collection"]
+    """Report live store state: is the index actually populated? Reads the
+    once-loaded store from app state and counts chunks."""
+    store = state["store"]
     return StatusResponse(
-        collection=collection.name,
-        count=collection.count(),
+        collection=store.name,
+        count=store.count(),
         embedding_model=state["embedding_model"],
         reranker_model=state["reranker_model"],
     )
