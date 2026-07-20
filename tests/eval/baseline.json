@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-20T14:39:51",
+  "generated_at": "2026-07-20T15:13:05",
   "model": "sentence-transformers/all-MiniLM-L6-v2",
   "collection": "obsidian_markdown",
   "collection_count": 205476,
