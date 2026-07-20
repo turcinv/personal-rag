@@ -52,8 +52,9 @@ class RetrievalStore(Protocol):
     def existing_ids(self) -> set:
         """Return the set of chunk IDs currently stored.
 
-        Must reflect the same population as :meth:`count`. Used by the
-        0-files anti-wipe guard in ``indexer.main()``.
+        Must reflect the same population as :meth:`count`. Provided for
+        ID-only callers; the incremental indexer's 0-files anti-wipe guard
+        derives its ID set from :meth:`snapshot` instead.
         """
         ...
 
