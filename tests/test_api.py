@@ -32,8 +32,8 @@ SECRET = "unit-test-jwt-secret-key-at-least-32-bytes-long"
 WRONG_SECRET = "some-other-secret-key-also-well-over-32-bytes-long"
 
 
-class FakeCollection:
-    """Stand-in for a Chroma collection — only /status's needs (.name, .count())."""
+class FakeStore:
+    """Stand-in for a RetrievalStore — only /status's needs (.name, .count())."""
 
     def __init__(self, name="obsidian_markdown", count=1234):
         self.name = name
@@ -63,7 +63,7 @@ def fake_state():
     return {
         "config": {},
         "model": object(),
-        "collection": FakeCollection(name="obsidian_markdown", count=1234),
+        "store": FakeStore(name="obsidian_markdown", count=1234),
         "reranker": object(),
         "embedding_model": "fake-embed",
         "reranker_model": "fake-rerank",
@@ -158,8 +158,8 @@ def test_status_valid_token_reports_fake_state(client, jwt_secret):
 
 
 def test_status_reflects_live_collection_count(client, fake_state):
-    """/status reads .count() live off the (fake) collection, not a cached value."""
-    fake_state["collection"] = FakeCollection(name="custom_coll", count=0)
+    """/status reads .count() live off the (fake) store, not a cached value."""
+    fake_state["store"] = FakeStore(name="custom_coll", count=0)
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv(JWT_SECRET_ENV, SECRET)
         resp = client.get("/status", headers=_auth(_mint()))
@@ -257,9 +257,9 @@ def test_query_valid_returns_envelope(client, jwt_secret, patch_search, fake_sta
     assert r["metadata"]["path"] == "p.md"
     assert r["distance"] == 0.12
     assert r["rank"] == 1
-    # app.state's model/collection/config (the injected fakes) were forwarded to search()
+    # app.state's model/store/config (the injected fakes) were forwarded to search()
     assert rec.last["model"] is fake_state["model"]
-    assert rec.last["collection"] is fake_state["collection"]
+    assert rec.last["store"] is fake_state["store"]
     assert rec.last["config"] is fake_state["config"]
 
 

@@ -1,16 +1,18 @@
 """Unit tests for the incremental engine (rag.indexing) — new/update/skip,
 stale preservation, and end-to-end idempotency through the source registry.
 
-Uses a fake embedding model and a temporary on-disk ChromaDB, so it runs
+Uses a fake embedding model and a real ChromaStore backed by a temporary
+on-disk ChromaDB (via the pluggable RetrievalStore seam — see
+docs/ADR-multi-corpus-profiles-and-pluggable-store.md, Axis 2), so it runs
 offline with no GPU and no real index."""
 
 import tempfile
 
-import chromadb
 import numpy as np
 
 from rag.extractors import iter_sources
 from rag.indexing import index_file_chunks, preserve_existing, run_source
+from rag.store.chroma_store import ChromaStore
 
 
 class FakeModel:
@@ -19,33 +21,30 @@ class FakeModel:
         return np.zeros((len(docs), 4))
 
 
-def _collection(name="unit"):
-    client = chromadb.PersistentClient(
-        path=tempfile.mkdtemp(),
-        settings=chromadb.Settings(anonymized_telemetry=False),
-    )
-    return client.get_or_create_collection(name)
+def _store(name="unit"):
+    store = ChromaStore(tempfile.mkdtemp(), name)
+    store.ensure(name)
+    return store
 
 
 def test_index_file_chunks_new_update_skip():
-    col = _collection("nus")
+    store = _store("nus")
     model = FakeModel()
     ids = ["i1", "i2"]
     docs = ["alpha", "beta"]
     metas = [{"path": "p", "domain": "DevOps"}, {"path": "p", "domain": "DevOps"}]
 
     # first pass: both new -> embedded
-    assert index_file_chunks(ids, docs, metas, {}, set(), model, "cpu", 16, col) == (2, 0, 2)
+    assert index_file_chunks(ids, docs, metas, {}, set(), model, "cpu", 16, store) == (2, 0, 2)
 
-    snap = col.get(include=["metadatas"])
-    existing = dict(zip(snap["ids"], snap["metadatas"]))
+    existing = store.snapshot()
 
     # identical content + metadata -> skipped
-    assert index_file_chunks(ids, docs, metas, existing, set(), model, "cpu", 16, col) == (0, 0, 2)
+    assert index_file_chunks(ids, docs, metas, existing, set(), model, "cpu", 16, store) == (0, 0, 2)
 
     # same body, changed metadata -> metadata refresh only (no re-embed)
     changed = [{"path": "p", "domain": "Platform"}, {"path": "p", "domain": "Platform"}]
-    assert index_file_chunks(ids, docs, changed, existing, set(), model, "cpu", 16, col) == (0, 2, 2)
+    assert index_file_chunks(ids, docs, changed, existing, set(), model, "cpu", 16, store) == (0, 2, 2)
 
 
 def test_preserve_existing_marks_only_matching_path():
@@ -66,16 +65,15 @@ def test_run_source_end_to_end_is_idempotent(tmp_path):
         "vault_path": str(tmp_path), "exclude_dirs": ["Templates"], "exclude_files": [],
         "markdown_workers": 1, "pdf_workers": 1,
     }
-    col = _collection("e2e")
+    store = _store("e2e")
     model = FakeModel()
 
     def run():
-        snap = col.get(include=["metadatas"])
-        existing = dict(zip(snap["ids"], snap["metadatas"]))
+        existing = store.snapshot()
         seen = set()
         new = upd = 0
         for source in iter_sources(config, tmp_path, 1200, 150):
-            _, s_new, s_upd = run_source(source, existing, seen, model, "cpu", 16, col)
+            _, s_new, s_upd = run_source(source, existing, seen, model, "cpu", 16, store)
             new += s_new
             upd += s_upd
         return new, upd, len(set(existing) - seen)
