@@ -101,6 +101,6 @@ class RetrievalStore(Protocol):
 
 1. **Config profiles** — `config.personal.yaml` / `config.logmanager.yaml` + docs. Do first; unblocks the wiki PoC immediately.
 2. **`RetrievalStore` + `ChromaStore`** — behavior-preserving extraction of the ~6 touchpoints; parity tests + eval baseline unchanged.
-3. **`OpenSearchStore`** — later, only when OpenSearch is committed for the wiki. Delivers hybrid natively.
+3. **`OpenSearchStore`** — later, only when OpenSearch is committed for the wiki. Delivers hybrid natively. Full build spec: `docs/OPENSEARCHSTORE_IMPLEMENTATION_PLAN.md` (index mapping, per-method mapping, the `query()` text/hybrid protocol change, RRF DSL, test strategy). Blocked on a provisioned cluster, not on design.
 
 The generation layer (for an actual chatbot) is a separate track, orthogonal to both axes.

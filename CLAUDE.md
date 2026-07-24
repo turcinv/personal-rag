@@ -267,7 +267,11 @@ Summary, ranked by impact/effort — do these in order, and build the eval set (
    / `make eval ARGS=--no-rerank` disables it. Query-time only, no reindex.
    Config: `reranker_model`, `rerank_fetch_k`.
 6. **BM25/lexical hybrid path** — highest raw impact, highest effort (1-2 days,
-   possibly a store change). Do last, after the eval set exists.
+   possibly a store change). Do last, after the eval set exists. **On the
+   OpenSearch backend this is free** — it's the native `hybrid=True` path, not
+   extra work. See `docs/OPENSEARCHSTORE_IMPLEMENTATION_PLAN.md` (Axis 3), which
+   subsumes this item for that backend. Chroma has no BM25 and doesn't need it
+   (MiniLM dense + rerank already scores well on the personal corpus).
 7. **[DONE]** ~~Expose `--tag`/`--status` filters in `query.py`.~~ `status` is a
    native Chroma `$eq` clause in `build_where()`; `tags` (comma-joined string, weak
    Chroma array support) is a case-insensitive AND post-filter behind a widened
