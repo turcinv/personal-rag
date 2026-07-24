@@ -257,10 +257,14 @@ Summary, ranked by impact/effort — do these in order, and build the eval set (
    Config: `reranker_model`, `rerank_fetch_k`.
 6. **BM25/lexical hybrid path** — highest raw impact, highest effort (1-2 days,
    possibly a store change). Do last, after the eval set exists.
-7. **Expose `--tag`/`--status` filters in `query.py`** — tags are stored as a
-   comma-joined string (Chroma 0.6.3 has weak array support) so real tag filtering
-   needs a substring post-filter, not a native `$eq`; currently unexposed entirely
-   despite the vault's curated tag vocabulary being a strong precision signal.
+7. **[DONE]** ~~Expose `--tag`/`--status` filters in `query.py`.~~ `status` is a
+   native Chroma `$eq` clause in `build_where()`; `tags` (comma-joined string, weak
+   Chroma array support) is a case-insensitive AND post-filter behind a widened
+   `tag_fetch_k` (200) candidate pool — ranking unchanged when no filter is given.
+   Wired through the CLI (`--status`, repeatable `--tag`) and the HTTP API
+   (`QueryFilters.status`/`.tags` → `/query`). See
+   `docs/RAG_ITEM7_TAG_STATUS_FILTERS_PLAN.md` for the implementation notes
+   (superseded by the merged code; kept for history).
 
 ## Deeper reference
 

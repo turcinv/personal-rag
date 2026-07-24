@@ -5,6 +5,10 @@ __pycache__/
 *.pyc
 *.egg-info/
 .DS_Store
+.idea/
+
+# Ad-hoc eval verification runs (the tracked baseline is tests/eval/baseline.json)
+tests/eval/current_*.json
 
 # Environment variable overrides (user-specific paths)
 .env
