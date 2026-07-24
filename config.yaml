@@ -71,6 +71,22 @@ rerank_fetch_k: 20
 # (Chroma 0.6.3 can't query the comma-joined tags string), so the pool must be wide
 # enough that matches survive the post-filter. Only applies when tags are supplied.
 tag_fetch_k: 200
+# ── Answer generation (retrieval ≠ chatbot) ──────────────────────────────────
+# Optional layer ABOVE search(): the /answer endpoint retrieves chunks, then
+# asks an LLM for a grounded, cited answer. Orthogonal to the retrieval store
+# (see docs/ADR-multi-corpus-profiles-and-pluggable-store.md) — same generator
+# for any store backend. DISABLED by default: with no `generation` block (or no
+# API key exported) /query is unaffected and /answer returns 503. The API key is
+# read from the environment (api_key_env), NEVER stored here. To enable, add:
+#   generation:
+#     provider: anthropic        # anthropic | openai
+#     model: claude-sonnet-5     # provider model id
+#     max_tokens: 1024
+#     temperature: 0.0
+#     timeout: 60
+#     api_key_env: ANTHROPIC_API_KEY   # optional; provider default otherwise
+#     # base_url: https://api.anthropic.com   # optional override (OpenAI-compat servers)
+
 embedding_batch_size: 16   # chunks per embed call — keep small on Jetson (8 GB unified RAM)
 markdown_workers: 1        # threads for parallel MD extraction (I/O bound); 1 = sequential
 pdf_workers: 1             # threads for parallel PDF extraction; keep at 1 on Jetson

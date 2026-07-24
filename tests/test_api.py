@@ -43,6 +43,43 @@ class FakeStore:
         return self._count
 
 
+from rag.generation import AnswerResult, GenerationError  # noqa: E402
+
+
+class FakeGenerator:
+    """Stand-in Generator for /answer tests. Records the generate() call and
+    returns a canned AnswerResult, or raises if ``raise_error`` is set."""
+
+    def __init__(self, answer="Grounded answer [1].", *, raise_error=False):
+        self.provider = "fake-provider"
+        self.model = "fake-model"
+        self._answer = answer
+        self._raise = raise_error
+        self.calls = []
+
+    def generate(self, question, contexts, *, max_tokens=None, temperature=None):
+        self.calls.append(
+            {
+                "question": question,
+                "contexts": contexts,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+        )
+        if self._raise:
+            raise GenerationError("upstream boom")
+        return AnswerResult(
+            answer=self._answer,
+            model=self.model,
+            usage={"input_tokens": 10, "output_tokens": 5},
+            stop_reason="end_turn",
+        )
+
+    @property
+    def last(self):
+        return self.calls[-1]
+
+
 def _mint(secret=SECRET, *, sub="unit-test", expires_delta=timedelta(hours=1)):
     """Sign an HS256 token directly (full control over secret + expiry)."""
     now = datetime.now(timezone.utc)
@@ -65,6 +102,7 @@ def fake_state():
         "model": object(),
         "store": FakeStore(name="obsidian_markdown", count=1234),
         "reranker": object(),
+        "generator": FakeGenerator(),
         "embedding_model": "fake-embed",
         "reranker_model": "fake-rerank",
     }
@@ -640,3 +678,124 @@ def test_index_failed_error_is_single_trimmed_line(client, jwt_secret, indexer):
     assert "/app/" not in err                        # (iii) no container path
     assert "Traceback" not in err                    #      no traceback header
     assert len(err) <= 300                            # (iv) capped
+
+
+# ── POST /answer (retrieval-augmented generation) ───────────────────────────────
+#
+# The route reuses the REAL build_where + the patched rag.query.search (via the
+# patch_search fixture above), then calls the FakeGenerator in fake_state. These
+# tests never touch a real LLM.
+
+
+def test_answer_valid_returns_envelope_and_citations(
+    client, jwt_secret, patch_search, fake_state
+):
+    patch_search(_records(with_rerank_score=True))
+    resp = client.post(
+        "/answer", headers=_auth(_mint()), json={"query": "how do I do X"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["query"] == "how do I do X"
+    assert body["answer"] == "Grounded answer [1]."
+    assert body["grounded"] is True
+    assert body["provider"] == "fake-provider"
+    assert body["model"] == "fake-model"
+    assert body["reranked"] is True
+    # one context record -> one citation, 1-based, carrying its metadata
+    assert len(body["citations"]) == 1
+    c = body["citations"][0]
+    assert c["n"] == 1
+    assert c["path"] == "p.md"
+    assert c["domain"] == "DevOps"
+    assert body["usage"]["output_tokens"] == 5
+
+
+def test_answer_forwards_search_and_generation_params(
+    client, jwt_secret, patch_search, fake_state
+):
+    """n_results/rerank/filters flow to search(); max_tokens/temperature to generate()."""
+    rec = patch_search(_records())
+    resp = client.post(
+        "/answer",
+        headers=_auth(_mint()),
+        json={
+            "query": "q",
+            "n_results": 5,
+            "rerank": False,
+            "filters": {"domain": "DevOps", "tags": ["devops"]},
+            "max_tokens": 321,
+            "temperature": 0.4,
+        },
+    )
+    assert resp.status_code == 200
+    assert rec.last["n_results"] == 5
+    assert rec.last["rerank"] is False
+    assert rec.last["filters"] == {"domain": {"$eq": "DevOps"}}
+    assert rec.last["tags"] == ["devops"]
+    gen_call = fake_state["generator"].last
+    assert gen_call["question"] == "q"
+    assert gen_call["max_tokens"] == 321
+    assert gen_call["temperature"] == 0.4
+    assert gen_call["contexts"] == rec.records  # the retrieved records, verbatim
+
+
+def test_answer_empty_context_short_circuits_without_llm(
+    client, jwt_secret, patch_search, fake_state
+):
+    """No retrieved chunks -> fixed refusal, generator.generate is NEVER called."""
+    patch_search([])
+    resp = client.post("/answer", headers=_auth(_mint()), json={"query": "q"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["grounded"] is False
+    assert body["citations"] == []
+    assert "couldn't find" in body["answer"].lower()
+    assert fake_state["generator"].calls == []  # LLM not invoked
+
+
+def test_answer_generator_unconfigured_returns_503(
+    client, jwt_secret, patch_search, fake_state
+):
+    """generator is None (generation not configured) -> 503, and search not needed."""
+    fake_state["generator"] = None
+    rec = patch_search(_records())
+    resp = client.post("/answer", headers=_auth(_mint()), json={"query": "q"})
+    assert resp.status_code == 503
+    assert "not configured" in resp.json()["detail"].lower()
+    assert rec.calls == []  # short-circuits before retrieval
+
+
+def test_answer_generation_error_maps_to_502(
+    client, jwt_secret, patch_search, fake_state
+):
+    fake_state["generator"] = FakeGenerator(raise_error=True)
+    patch_search(_records())
+    resp = client.post("/answer", headers=_auth(_mint()), json={"query": "q"})
+    assert resp.status_code == 502
+    assert "generation failed" in resp.json()["detail"].lower()
+
+
+def test_answer_requires_auth(client, jwt_secret, patch_search):
+    patch_search(_records())
+    assert client.post("/answer", json={"query": "q"}).status_code == 401
+
+
+def test_answer_empty_query_422(client, jwt_secret, patch_search):
+    patch_search(_records())
+    resp = client.post("/answer", headers=_auth(_mint()), json={"query": "   "})
+    assert resp.status_code == 422
+
+
+@pytest.mark.parametrize("n_results,expected", [(0, 422), (21, 422), (1, 200), (20, 200)])
+def test_answer_n_results_cap_20(
+    client, jwt_secret, patch_search, n_results, expected
+):
+    """/answer caps context at 20 chunks (tighter than /query's 50)."""
+    patch_search(_records())
+    resp = client.post(
+        "/answer",
+        headers=_auth(_mint()),
+        json={"query": "q", "n_results": n_results},
+    )
+    assert resp.status_code == expected

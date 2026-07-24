@@ -185,6 +185,65 @@ Example:
 }
 ```
 
+### `POST /answer`
+
+**Auth required.** Retrieval-augmented generation: runs the same retrieval as
+`/query`, then asks the configured LLM for a grounded, cited answer. The
+generation layer sits *above* `search()` and is orthogonal to the retrieval
+store (see the ADR) — the same endpoint works for any store backend.
+
+**Only available when generation is configured.** If the active config has no
+`generation` block, or the provider API-key env var is unset, the server starts
+normally, `/query` works, and this endpoint returns `503`. See
+[Configuration](#configuration) for the `generation` block.
+
+Request body (retrieval knobs mirror `/query`):
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `query` | string | — | **Required.** Whitespace-stripped; empty → `422`. |
+| `n_results` | int | `8` | Chunks fed to the LLM as context. Bounded `1..20` (tighter than `/query`'s 50 to bound prompt/cost). |
+| `rerank` | bool | `true` | Same cross-encoder rerank as `/query`. |
+| `filters` | object | `null` | Same shape as `/query` (`domain`, `subdomain`, `type`, `source`, `confidence`, `status`, `tags`). |
+| `max_tokens` | int | `null` | Override the configured generation `max_tokens` for this call (`1..4096`). |
+| `temperature` | float | `null` | Override the configured `temperature` (`0.0..2.0`). |
+
+Response body:
+
+| Field | Type | Notes |
+|---|---|---|
+| `query` | string | Echo of the request query. |
+| `answer` | string | The generated answer, with inline `[n]` citations. |
+| `grounded` | bool | `false` when retrieval found nothing — the LLM is **not** called and a fixed "no relevant context" answer is returned (no hallucination). |
+| `provider` | string | `anthropic` / `openai`. |
+| `model` | string | Model that actually served the request. |
+| `reranked` | bool | As in `/query`. |
+| `citations` | array | One entry per context passage, `n` matching the `[n]` markers. |
+| `usage` | object | Raw provider token-usage (when available); `null` otherwise. |
+
+Each citation: `n` (1-based), `title`, `path`, `domain`, `distance`,
+`rerank_score` (when reranked). The citation index `n` lines up with the
+passage numbering the model was given, so `[1]` in the answer maps to
+`citations[0]`.
+
+Failure modes: `503` (generation not configured), `502` (the upstream LLM call
+failed — transport, non-2xx, or an unparseable body), `422` (bad request body).
+
+```json
+{
+  "query": "How does K3s handle secrets?",
+  "answer": "K3s stores secrets in its embedded datastore [1]; they are not encrypted at rest by default [1].",
+  "grounded": true,
+  "provider": "anthropic",
+  "model": "claude-sonnet-5",
+  "reranked": true,
+  "citations": [
+    {"n": 1, "title": "K3s", "path": "Knowledge/DevOps/K3s.md", "domain": "DevOps", "rerank_score": 7.82}
+  ],
+  "usage": {"input_tokens": 1200, "output_tokens": 180}
+}
+```
+
 ### `POST /index`
 
 **Auth required.** Kicks off a reindex (`python -m rag.indexer`) as a background
@@ -318,6 +377,33 @@ table in [configuration.md](configuration.md); only the API server needs them):
 | `RAG_API_JWT_SECRET` | — (required) | HS256 shared secret. No default. Use ≥32 bytes. |
 | `RAG_API_HOST` | `0.0.0.0` | Bind address for uvicorn. |
 | `RAG_API_PORT` | `8000` | Bind port for uvicorn. |
+
+### Enabling `/answer` (generation)
+
+`/answer` is off unless the active config carries a `generation` block **and**
+the provider API key is exported. Add to the config profile:
+
+```yaml
+generation:
+  provider: anthropic          # anthropic | openai
+  model: claude-sonnet-5       # provider model id
+  max_tokens: 1024
+  temperature: 0.0
+  timeout: 60
+  api_key_env: ANTHROPIC_API_KEY   # optional; provider default otherwise
+  # base_url: https://api.anthropic.com   # optional; OpenAI-compat servers (vLLM, Ollama, LM Studio)
+```
+
+Then export the key (never committed):
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."     # or OPENAI_API_KEY for provider: openai
+```
+
+The key is read from the environment at startup, not from config. An unknown
+`provider` is a hard startup error; a missing key just leaves `/answer` at
+`503` while `/query` runs. Switching provider/model needs a restart (the
+generator is built once in the lifespan).
 
 ## See also
 

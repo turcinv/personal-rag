@@ -11,7 +11,8 @@ from fastapi import Request
 def get_rag_state(request: Request) -> dict:
     """Return the shared RAG state dict stashed on ``app.state`` at startup.
 
-    Keys: ``config``, ``model``, ``store``, ``reranker``,
-    ``embedding_model``, ``reranker_model``.
+    Keys: ``config``, ``model``, ``store``, ``reranker``, ``generator``
+    (``None`` when answer generation is not configured), ``embedding_model``,
+    ``reranker_model``.
     """
     return request.app.state.rag

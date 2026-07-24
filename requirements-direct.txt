@@ -30,3 +30,8 @@ python-dotenv==1.2.2
 fastapi
 uvicorn[standard]
 pyjwt
+# Answer-generation layer (/answer): the Anthropic/OpenAI backends call the
+# provider REST APIs directly over httpx (no heavy provider SDK). httpx already
+# resolves transitively (fastapi test client / starlette), declared direct here
+# because the generation clients import it at runtime.
+httpx

@@ -18,7 +18,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from .. import query
+from ..generation import GenerationConfigError, get_generator
 from ..utils import load_config, setup_logging
+from .routes import answer as answer_routes
 from .routes import index as index_routes
 from .routes import query as query_routes
 
@@ -59,11 +61,27 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("API startup: collection %r holds %d chunks", store.name, count)
 
+    # Answer generation is optional. Build the generator once here; if it is not
+    # configured (no `generation` block or no API key), keep it None so /query
+    # still works and /answer returns 503. An unknown provider is a real config
+    # bug and is left to raise loudly.
+    generator = None
+    try:
+        generator = get_generator(config)
+        logger.info(
+            "API startup: generation enabled (%s / %s)",
+            generator.provider,
+            generator.model,
+        )
+    except GenerationConfigError as exc:
+        logger.info("API startup: generation disabled — %s", exc)
+
     app.state.rag = {
         "config": config,
         "model": model,
         "store": store,
         "reranker": reranker,
+        "generator": generator,
         "embedding_model": embedding_model,
         "reranker_model": reranker_model,
     }
@@ -81,6 +99,7 @@ app = FastAPI(
 )
 
 app.include_router(query_routes.router)
+app.include_router(answer_routes.router)
 app.include_router(index_routes.router)
 
 

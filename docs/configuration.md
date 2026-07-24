@@ -71,6 +71,10 @@ json_sources:
 | `pdf_workers` | `1` | ThreadPoolExecutor threads for PDF extraction. Keep at 1 on Jetson. |
 | `pdf_sources` | `[]` | List of `{path, type}` PDF source directories. `type` is stored as chunk metadata. Acts as a **fallback**: files whose name is already covered by a `json_sources` document are skipped, so configuring both never double-indexes. |
 | `json_sources` | `[]` | List of `{path}` dirs of pre-extracted document JSON (`doc-text-extractor` `indexed/*.json`): full `text` + metadata (title, primary_topic→domain, resource_type→type, tags, confidence). Deterministic, so re-runs are idempotent. |
+| `reranker_model` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder used at query time (no reindex). Default-on; `rag-query --no-rerank` disables. |
+| `rerank_fetch_k` | `20` | Dense candidate pool retrieved before reranking down to `n_results`. |
+| `tag_fetch_k` | `200` | Dense pool floor when a `--tag` filter is active (tags are post-filtered — see roadmap item 7). Only applies when tags are supplied. |
+| `generation` | *(absent)* | Optional block enabling the `/answer` RAG endpoint. Absent ⇒ `/answer` returns `503`, `/query` unaffected. Sub-keys: `provider` (`anthropic`\|`openai`), `model` (required), `max_tokens` (`1024`), `temperature` (`0.0`), `timeout` (`60`), `api_key_env` (provider default: `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`), `base_url` (optional; OpenAI-compat servers). The API **key** is read from the env var named by `api_key_env`, never from this file. See [api.md](api.md#enabling-answer-generation). |
 
 ## Environment variables
 

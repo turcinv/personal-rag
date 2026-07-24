@@ -91,6 +91,18 @@ rerank_fetch_k: 40
 # ceiling, so the tag-filter floor can be generous.
 tag_fetch_k: 400
 
+# Answer generation (optional layer above search(); see config.yaml for the full
+# reference). DISABLED by default — /query works without it, /answer returns 503
+# until a `generation` block + API key env var are present. For the wiki chatbot
+# this is where the answer-synthesis model is chosen (Czech content → prefer a
+# multilingual-capable model, same caveat as the wiki_lm embedding placeholder).
+# generation:
+#   provider: anthropic
+#   model: claude-sonnet-5
+#   max_tokens: 1024
+#   temperature: 0.0
+#   api_key_env: ANTHROPIC_API_KEY
+
 # Heavier settings than the personal (Jetson) profile — x86 server, no 8 GB
 # unified-RAM ceiling.
 embedding_batch_size: 64

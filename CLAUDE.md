@@ -13,7 +13,13 @@ Local retrieval index for an Obsidian knowledge vault + a PDF book/resource libr
 - Retrieves relevant chunks by semantic similarity query
 - Serves retrieval (and triggers reindexing) over HTTP via a JWT-authenticated FastAPI
   backend (`rag-serve`) that loads the model/collection/reranker once at startup
-- Fully offline — no cloud APIs used for indexing or retrieval
+- Optionally synthesizes grounded, cited answers over the retrieved chunks via the
+  `POST /answer` endpoint (the `generation/` layer). This sits ABOVE `search()` and is
+  orthogonal to the store — off by default; enabled per-profile with a `generation`
+  config block + a provider API key in the env (Anthropic / OpenAI). See docs/api.md.
+- Fully offline for indexing and retrieval — no cloud APIs used there. The optional
+  `/answer` generation layer is the one part that calls out to a cloud LLM (and only
+  when explicitly configured); retrieval never does.
 - Compatible with both macOS/x86 and NVIDIA Jetson (Python 3.10, same codebase)
 
 ## Environment
@@ -79,14 +85,19 @@ personal-rag/
 │   │   ├── indexing.py       # incremental engine: embed/upsert, per-file diff, run_source
 │   │   ├── indexer.py        # main() orchestration (MD + PDF + JSON → ChromaDB); entry: rag-index
 │   │   ├── query.py          # semantic query CLI + search()/build_where seam; entry: rag-query
+│   │   ├── generation/       # answer-synthesis layer ABOVE search() (retrieval ≠ chatbot); orthogonal to store
+│   │   │   ├── base.py        #   Generator Protocol + AnswerResult + shared build_prompt/format_contexts ([n] citations)
+│   │   │   ├── anthropic_gen.py #  AnthropicGenerator (Messages API via httpx, no SDK)
+│   │   │   ├── openai_gen.py  #   OpenAIGenerator (Chat Completions via httpx; also OpenAI-compat servers)
+│   │   │   └── __init__.py    #   get_generator(config) factory (provider from generation.* config; key from env)
 │   │   └── api/              # FastAPI HTTP backend (reuses query.search — never reimplements retrieval)
-│   │       ├── app.py         #   app + lifespan: load model/collection/reranker ONCE; entry: rag-serve
+│   │       ├── app.py         #   app + lifespan: load model/collection/reranker + generator ONCE; entry: rag-serve
 │   │       ├── auth.py        #   HS256 JWT bearer auth dependency (require_jwt); secret from RAG_API_JWT_SECRET
 │   │       ├── token.py       #   mint a service JWT for the bots; entry: rag-token
 │   │       ├── deps.py        #   get_rag_state (shared app.state accessor)
 │   │       ├── jobs.py        #   background reindex subprocess manager + in-process job registry
 │   │       ├── schemas.py     #   pydantic request/response models
-│   │       └── routes/        #   query.py (/health, /query, /status) + index.py (/index, /index/jobs/{id})
+│   │       └── routes/        #   query.py (/health, /query, /status) + answer.py (/answer) + index.py (/index, /index/jobs/{id})
 │   └── extractor/            # document extraction pipeline (merged from doc-text-extractor)
 │       ├── __init__.py
 │       ├── extract_text.py    # PDF/EPUB/MD → text_output/*.json; entry: rag-extract

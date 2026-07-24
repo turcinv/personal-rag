@@ -62,6 +62,56 @@ class QueryResponse(BaseModel):
     results: list[dict[str, Any]]
 
 
+# ── Answer generation (retrieval ≠ chatbot) ─────────────────────────────────────
+
+
+class AnswerRequest(BaseModel):
+    """Ask a question and get a grounded, cited answer synthesized from the
+    retrieved chunks. Retrieval knobs mirror ``QueryRequest`` (same
+    ``build_where`` + ``search`` path); ``max_tokens`` / ``temperature`` override
+    the configured generation defaults for this one call.
+
+    ``n_results`` is the number of chunks fed to the LLM as context — capped at
+    20 (not 50 like /query) to keep the prompt and cost bounded."""
+
+    query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    n_results: int = Field(8, ge=1, le=20)
+    rerank: bool = True
+    filters: Optional[QueryFilters] = None
+    max_tokens: Optional[int] = Field(None, ge=1, le=4096)
+    temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+
+
+class Citation(BaseModel):
+    """One numbered source passage behind an answer. ``n`` matches the ``[n]``
+    markers the model cites; the fields identify the source note/chunk."""
+
+    n: int
+    title: Optional[str] = None
+    path: Optional[str] = None
+    domain: Optional[str] = None
+    distance: Optional[float] = None
+    rerank_score: Optional[float] = None
+
+
+class AnswerResponse(BaseModel):
+    """Envelope for a generated answer.
+
+    ``grounded`` is False when retrieval returned no chunks — the endpoint then
+    returns a fixed "no relevant context" answer WITHOUT calling the LLM, so it
+    never hallucinates from an empty context. ``citations`` line up 1:1 with the
+    context passages the model was given."""
+
+    query: str
+    answer: str
+    grounded: bool
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    reranked: bool = False
+    citations: list[Citation] = []
+    usage: Optional[dict[str, Any]] = None
+
+
 # ── Indexing (Phase 4) ─────────────────────────────────────────────────────────
 
 

@@ -84,6 +84,18 @@ rerank_fetch_k: 20
 # (Chroma 0.6.3 can't query the comma-joined tags string), so the pool must be wide
 # enough that matches survive the post-filter. Only applies when tags are supplied.
 tag_fetch_k: 200
+
+# Answer generation (optional layer above search(); see config.yaml for the full
+# reference). DISABLED by default — /query works without it, /answer returns 503
+# until a `generation` block + API key env var are present. On the Jetson the LLM
+# call is remote (cloud API), so it adds no local memory beyond an httpx request.
+# generation:
+#   provider: anthropic
+#   model: claude-sonnet-5
+#   max_tokens: 1024
+#   temperature: 0.0
+#   api_key_env: ANTHROPIC_API_KEY
+
 embedding_batch_size: 16   # chunks per embed call — keep small on Jetson (8 GB unified RAM)
 markdown_workers: 1        # threads for parallel MD extraction (I/O bound); 1 = sequential
 pdf_workers: 1             # threads for parallel PDF extraction; keep at 1 on Jetson
