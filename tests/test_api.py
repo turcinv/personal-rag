@@ -302,13 +302,42 @@ def test_query_valid_returns_envelope(client, jwt_secret, patch_search, fake_sta
 
 
 def test_query_defaults_forwarded(client, jwt_secret, patch_search):
-    """Body with only `query` → search() gets n_results=8, rerank=True, filters=None."""
+    """Body with only `query` → n_results=8, filters=None, and rerank from config.
+
+    The fixture config has no `rerank_default`, so rerank_default() falls back to
+    True — the pre-2026-07-27 behaviour, kept for configs predating the key."""
     rec = patch_search(_records())
     resp = client.post("/query", headers=_auth(_mint()), json={"query": "q"})
     assert resp.status_code == 200
     assert rec.last["n_results"] == 8
     assert rec.last["rerank"] is True
     assert rec.last["filters"] is None
+
+
+def test_query_omitted_rerank_follows_config_default(client, fake_state, jwt_secret, patch_search):
+    """`rerank` absent from the body → the profile's rerank_default decides."""
+    fake_state["config"] = {"rerank_default": False}
+    rec = patch_search(_records())
+    resp = client.post("/query", headers=_auth(_mint()), json={"query": "q"})
+    assert resp.status_code == 200
+    assert rec.last["rerank"] is False
+    assert resp.json()["reranked"] is False
+
+
+def test_query_explicit_rerank_overrides_config_default(client, fake_state, jwt_secret, patch_search):
+    """An explicit `rerank` in the body wins over rerank_default, both ways."""
+    fake_state["config"] = {"rerank_default": False}
+    rec = patch_search(_records(with_rerank_score=True))
+    resp = client.post("/query", headers=_auth(_mint()), json={"query": "q", "rerank": True})
+    assert resp.status_code == 200
+    assert rec.last["rerank"] is True
+    assert resp.json()["reranked"] is True
+
+    fake_state["config"] = {"rerank_default": True}
+    rec = patch_search(_records())
+    resp = client.post("/query", headers=_auth(_mint()), json={"query": "q", "rerank": False})
+    assert resp.status_code == 200
+    assert rec.last["rerank"] is False
 
 
 @pytest.mark.parametrize(
@@ -738,6 +767,18 @@ def test_answer_forwards_search_and_generation_params(
     assert gen_call["max_tokens"] == 321
     assert gen_call["temperature"] == 0.4
     assert gen_call["contexts"] == rec.records  # the retrieved records, verbatim
+
+
+def test_answer_omitted_rerank_follows_config_default(
+    client, fake_state, jwt_secret, patch_search
+):
+    """/answer resolves an omitted `rerank` from the profile, same as /query."""
+    fake_state["config"] = {"rerank_default": False}
+    rec = patch_search(_records())
+    resp = client.post("/answer", headers=_auth(_mint()), json={"query": "q"})
+    assert resp.status_code == 200
+    assert rec.last["rerank"] is False
+    assert resp.json()["reranked"] is False
 
 
 def test_answer_empty_context_short_circuits_without_llm(

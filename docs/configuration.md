@@ -71,8 +71,9 @@ json_sources:
 | `pdf_workers` | `1` | ThreadPoolExecutor threads for PDF extraction. Keep at 1 on Jetson. |
 | `pdf_sources` | `[]` | List of `{path, type}` PDF source directories. `type` is stored as chunk metadata. Acts as a **fallback**: files whose name is already covered by a `json_sources` document are skipped, so configuring both never double-indexes. |
 | `json_sources` | `[]` | List of `{path}` dirs of pre-extracted document JSON (`doc-text-extractor` `indexed/*.json`): full `text` + metadata (title, primary_topic→domain, resource_type→type, tags, confidence). Deterministic, so re-runs are idempotent. |
-| `reranker_model` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder used at query time (no reindex). Default-on; `rag-query --no-rerank` disables. |
+| `reranker_model` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder used at query time (no reindex). |
 | `rerank_fetch_k` | `20` | Dense candidate pool retrieved before reranking down to `n_results`. |
+| `rerank_default` | `false` (this profile) | Whether `rag-query` / `rag-eval` / `POST /query` / `POST /answer` rerank when the caller says nothing. **Per-profile, because the cross-encoder is corpus-dependent** — measured 2026-07-27 it *loses* overall recall@5 on the personal corpus (0.911 → 0.844), so it is off here and on in `config.logmanager.yaml`. Override per call: `rag-query --rerank` / `--no-rerank`, or `"rerank": true\|false` in the request body. Absent from a config ⇒ falls back to `true` (pre-2026-07-27 behaviour). See CLAUDE.md roadmap item 5. |
 | `tag_fetch_k` | `200` | Dense pool floor when a `--tag` filter is active (tags are post-filtered — see roadmap item 7). Only applies when tags are supplied. |
 | `generation` | *(absent)* | Optional block enabling the `/answer` RAG endpoint. Absent ⇒ `/answer` returns `503`, `/query` unaffected. Sub-keys: `provider` (`anthropic`\|`openai`), `model` (required), `max_tokens` (`1024`), `temperature` (`0.0`), `timeout` (`60`), `api_key_env` (provider default: `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`), `base_url` (optional; OpenAI-compat servers). The API **key** is read from the env var named by `api_key_env`, never from this file. See [api.md](api.md#enabling-answer-generation). |
 
@@ -131,7 +132,8 @@ code change**. Two profiles ship today, run as two independent instances:
 | Knob | `config.personal.yaml` | `config.logmanager.yaml` |
 |---|---|---|
 | `embedding_model` | `all-MiniLM-L6-v2` | `all-MiniLM-L6-v2` (**placeholder** — see file comment; a larger model is deferred until the wiki corpus exists and can be evaluated, to avoid repeating the bge-small/gte-small net-regression seen on the personal corpus) |
-| `reranker_model` / `rerank_fetch_k` | ms-marco-MiniLM-L-6 / 20 | same model / 40 (tunable, or disable with `--no-rerank` if it hurts) |
+| `reranker_model` / `rerank_fetch_k` | ms-marco-MiniLM-L-6 / 20 | same model / 40 |
+| `rerank_default` | `false` — measured: rerank costs overall recall@5 (0.911 → 0.844) on this corpus | `true` — kept on until there is a wiki eval set; the personal-corpus finding is corpus-specific and may not transfer |
 | `tag_fetch_k` | 200 | 400 |
 | `embedding_batch_size` | 16 | 64 |
 | `*_workers` | 1 | `markdown_workers: 8`, `embedding_workers: 4` |
