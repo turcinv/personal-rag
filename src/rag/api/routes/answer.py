@@ -80,6 +80,13 @@ def answer(
         status=f.status if f else None,
     )
 
+    # rerank omitted (None) → fall back to the profile's rerank_default.
+    rerank = (
+        request.rerank
+        if request.rerank is not None
+        else rag_query.rerank_default(state["config"])
+    )
+
     records = rag_query.search(
         request.query,
         n_results=request.n_results,
@@ -88,10 +95,10 @@ def answer(
         config=state["config"],
         model=state["model"],
         store=state["store"],
-        rerank=request.rerank,
+        rerank=rerank,
     )
 
-    reranked = request.rerank and any("rerank_score" in r for r in records)
+    reranked = rerank and any("rerank_score" in r for r in records)
 
     # No context → fixed refusal, never call the LLM (no hallucination surface).
     if not records:

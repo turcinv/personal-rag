@@ -33,7 +33,8 @@ def query(
     build_where returns None when everything is falsy) and calls ``query.search``
     with the model/store/config from app state. Returns search()'s native
     records inside a small envelope. ``reranked`` is True only when reranking was
-    requested AND actually applied (a non-empty dense pool produced scores)."""
+    in effect AND actually applied (a non-empty dense pool produced scores).
+    Omitting ``rerank`` in the request uses the profile's ``rerank_default``."""
     f = request.filters
     where = rag_query.build_where(
         domain=f.domain if f else None,
@@ -44,6 +45,13 @@ def query(
         status=f.status if f else None,
     )
 
+    # rerank omitted (None) → fall back to the profile's rerank_default.
+    rerank = (
+        request.rerank
+        if request.rerank is not None
+        else rag_query.rerank_default(state["config"])
+    )
+
     records = rag_query.search(
         request.query,
         n_results=request.n_results,
@@ -52,10 +60,10 @@ def query(
         config=state["config"],
         model=state["model"],
         store=state["store"],
-        rerank=request.rerank,
+        rerank=rerank,
     )
 
-    reranked = request.rerank and any("rerank_score" in r for r in records)
+    reranked = rerank and any("rerank_score" in r for r in records)
     return QueryResponse(
         query=request.query,
         count=len(records),

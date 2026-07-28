@@ -39,18 +39,23 @@ WORKDIR /app
 RUN pip install --no-cache-dir torch torchvision \
     --index-url https://pypi.jetson-ai-lab.io/jp6/cu126
 
-COPY requirements-jetson.txt pyproject.toml ./
+# Dependency layer first — cached across source-only changes.
 # Ubuntu 22.04 ships pip 22 / setuptools 59 — too old for PEP 660 editable
-# installs. Upgrade the toolchain, then install the package without build
-# isolation so the modern setuptools is used as the build backend.
+# installs, so upgrade the toolchain here.
+COPY requirements-jetson.txt ./
 RUN python -m pip install --no-cache-dir --upgrade pip "setuptools<82" wheel \
- && pip install --no-cache-dir -r requirements-jetson.txt \
- && pip install --no-cache-dir -e . --no-deps --no-build-isolation
+ && pip install --no-cache-dir -r requirements-jetson.txt
 
+COPY pyproject.toml ./
 COPY src/ ./src/
 COPY tests/ ./tests/
 COPY scripts/ ./scripts/
 COPY config.yaml .env.example ./
+
+# Editable install must come AFTER src/ exists: this is a src-layout package,
+# so setuptools puts egg-info under src/ and errors out if the dir is missing.
+# --no-build-isolation reuses the setuptools installed above as the backend.
+RUN pip install --no-cache-dir -e . --no-deps --no-build-isolation
 
 ENV HF_HOME=/data/hf-cache
 ENV TRANSFORMERS_CACHE=/data/hf-cache

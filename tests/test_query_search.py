@@ -4,6 +4,8 @@ store is a fake (see docs/ADR-multi-corpus-profiles-and-pluggable-store.md,
 Axis 2 — RetrievalStore seam), so these run offline with no model download and
 no chromadb."""
 
+import pytest
+
 import rag.query as q
 
 
@@ -204,3 +206,63 @@ def test_cli_status_and_repeated_tag_wire_through(monkeypatch, capsys):
     q.main()
     assert calls["tags"] == ["devops", "ci"]
     assert calls["filters"] == {"status": {"$eq": "processed"}}
+
+
+# ── rerank_default: per-profile default for callers above search() ──────────────
+
+
+def test_rerank_default_reads_config_key():
+    assert q.rerank_default({"rerank_default": False}) is False
+    assert q.rerank_default({"rerank_default": True}) is True
+
+
+def test_rerank_default_falls_back_to_true_when_absent():
+    """Configs predating the key keep the old default-on behaviour."""
+    assert q.rerank_default({}) is True
+    assert q.rerank_default(None) is True
+
+
+def _run_cli(monkeypatch, argv, config):
+    """Run q.main() with search() stubbed; return the kwargs it was called with."""
+    calls = {}
+
+    def fake_search(query, n_results=8, **kw):
+        calls.update(kw)
+        return []
+
+    monkeypatch.setattr(q, "load_config", lambda: config)
+    monkeypatch.setattr(q, "setup_logging", lambda *a, **k: None)
+    monkeypatch.setattr(q, "search", fake_search)
+    monkeypatch.setattr("sys.argv", argv)
+    q.main()
+    return calls
+
+
+def test_cli_rerank_follows_config_when_no_flag(monkeypatch):
+    calls = _run_cli(monkeypatch, ["rag-query", "hello"],
+                     {"embedding_model": "x", "rerank_default": False})
+    assert calls["rerank"] is False
+
+    calls = _run_cli(monkeypatch, ["rag-query", "hello"],
+                     {"embedding_model": "x", "rerank_default": True})
+    assert calls["rerank"] is True
+
+
+def test_cli_flags_override_config_default(monkeypatch):
+    """--rerank / --no-rerank beat rerank_default in both directions."""
+    calls = _run_cli(monkeypatch, ["rag-query", "hello", "--rerank"],
+                     {"embedding_model": "x", "rerank_default": False})
+    assert calls["rerank"] is True
+
+    calls = _run_cli(monkeypatch, ["rag-query", "hello", "--no-rerank"],
+                     {"embedding_model": "x", "rerank_default": True})
+    assert calls["rerank"] is False
+
+
+def test_cli_rerank_flags_are_mutually_exclusive(monkeypatch):
+    monkeypatch.setattr(q, "load_config", lambda: {"embedding_model": "x"})
+    monkeypatch.setattr(q, "setup_logging", lambda *a, **k: None)
+    monkeypatch.setattr(q, "search", lambda *a, **k: [])
+    monkeypatch.setattr("sys.argv", ["rag-query", "hi", "--rerank", "--no-rerank"])
+    with pytest.raises(SystemExit):
+        q.main()

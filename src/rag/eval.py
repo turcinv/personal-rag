@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .utils import load_config, setup_logging
-from .query import build_where, get_model, open_store, search
+from .query import build_where, get_model, open_store, rerank_default, search
 
 logger = logging.getLogger("rag")
 
@@ -156,22 +156,29 @@ def main():
                         help="Free-text label recorded in the output (e.g. 'baseline')")
     parser.add_argument("--out", default=None,
                         help="Write the full result JSON to this path")
-    parser.add_argument("--no-rerank", dest="rerank", action="store_false",
-                        help="Disable cross-encoder reranking (dense retrieval only)")
+    rr = parser.add_mutually_exclusive_group()
+    rr.add_argument("--rerank", dest="rerank", action="store_true", default=None,
+                    help="Force cross-encoder reranking on (overrides rerank_default)")
+    rr.add_argument("--no-rerank", dest="rerank", action="store_false",
+                    help="Disable cross-encoder reranking (dense retrieval only)")
     parser.add_argument("--hybrid", dest="hybrid", action="store_true",
                         help="Enable BM25+dense hybrid fusion (Phase 3d)")
-    parser.set_defaults(rerank=True, hybrid=False)
+    parser.set_defaults(hybrid=False)
     args = parser.parse_args()
 
     config = load_config()
     setup_logging(config, console=False)
+
+    # Neither flag given → fall back to the profile's rerank_default, so `make eval`
+    # measures whatever the CLI/API would actually do for this corpus.
+    rerank = args.rerank if args.rerank is not None else rerank_default(config)
 
     if args.n < 10:
         logger.warning("retrieval depth %d < 10; recall@10 will be capped", args.n)
 
     golden = load_golden(args.golden)
     result = evaluate(golden, n=args.n, config=config, collection_name=args.collection,
-                      rerank=args.rerank, hybrid=args.hybrid)
+                      rerank=rerank, hybrid=args.hybrid)
     if args.label:
         result["label"] = args.label
     print_report(result, label=args.label)

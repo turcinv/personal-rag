@@ -49,7 +49,11 @@ class QueryRequest(BaseModel):
 
     query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     n_results: int = Field(8, ge=1, le=50)
-    rerank: bool = True
+    rerank: Optional[bool] = Field(
+        None,
+        description="Cross-encoder rerank. Omit to use the profile's `rerank_default`; "
+                    "true/false forces it for this call.",
+    )
     filters: Optional[QueryFilters] = None
 
 
@@ -76,7 +80,11 @@ class AnswerRequest(BaseModel):
 
     query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     n_results: int = Field(8, ge=1, le=20)
-    rerank: bool = True
+    rerank: Optional[bool] = Field(
+        None,
+        description="Cross-encoder rerank. Omit to use the profile's `rerank_default`; "
+                    "true/false forces it for this call.",
+    )
     filters: Optional[QueryFilters] = None
     max_tokens: Optional[int] = Field(None, ge=1, le=4096)
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0)

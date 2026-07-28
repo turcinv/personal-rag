@@ -26,8 +26,25 @@ MINILM = "sentence-transformers/all-MiniLM-L6-v2"
 # Axis 1 — config profiles
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Path overrides that load_config() applies on top of whatever profile is
+# selected. rag.utils calls load_dotenv() at import, so a developer's real .env
+# leaks into these assertions (RAG_JSON_PATH in particular REPLACES the whole
+# json_sources list, which silently breaks the markdown-only logmanager profile).
+# Clearing the shell env is not enough — dotenv repopulates from the file — so
+# each profile test drops them from os.environ after import.
+_PATH_OVERRIDES = (
+    "RAG_VAULT_PATH", "RAG_PDF_BOOKS_PATH", "RAG_PDF_RESOURCES_PATH",
+    "RAG_JSON_PATH", "RAG_INDEX_PATH",
+)
+
+
+def _isolate_path_overrides(monkeypatch):
+    for var in _PATH_OVERRIDES:
+        monkeypatch.delenv(var, raising=False)
+
 
 def test_personal_profile_loads_expected_values(monkeypatch):
+    _isolate_path_overrides(monkeypatch)
     monkeypatch.setenv("RAG_CONFIG_PATH", str(REPO_ROOT / "config.personal.yaml"))
 
     cfg = load_config()
@@ -42,6 +59,7 @@ def test_personal_profile_loads_expected_values(monkeypatch):
 
 
 def test_logmanager_profile_loads_expected_values(monkeypatch):
+    _isolate_path_overrides(monkeypatch)
     monkeypatch.setenv("RAG_CONFIG_PATH", str(REPO_ROOT / "config.logmanager.yaml"))
 
     cfg = load_config()
@@ -58,11 +76,26 @@ def test_logmanager_profile_loads_expected_values(monkeypatch):
 
 
 def test_dev_default_config_uses_chroma_store(monkeypatch):
+    _isolate_path_overrides(monkeypatch)
     monkeypatch.setenv("RAG_CONFIG_PATH", str(REPO_ROOT / "config.yaml"))
 
     cfg = load_config()
 
     assert cfg["store"] == "chroma"
+
+
+def test_profiles_carry_expected_rerank_default(monkeypatch):
+    """rerank_default is per-profile: off for the personal corpus (measured
+    2026-07-27 — rerank loses overall recall@5 there), left on for the wiki
+    profile until there is a wiki eval set to measure against."""
+    for profile, expected in [
+        ("config.yaml", False),
+        ("config.personal.yaml", False),
+        ("config.logmanager.yaml", True),
+    ]:
+        _isolate_path_overrides(monkeypatch)
+        monkeypatch.setenv("RAG_CONFIG_PATH", str(REPO_ROOT / profile))
+        assert load_config()["rerank_default"] is expected, profile
 
 
 # ─────────────────────────────────────────────────────────────────────────────

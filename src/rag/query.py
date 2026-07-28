@@ -27,6 +27,21 @@ _RERANKER_CACHE: dict = {}
 DEFAULT_RERANKER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 
+def rerank_default(config: dict) -> bool:
+    """Whether reranking is on by default for this config profile.
+
+    ``search()`` itself always defaults to ``rerank=False``; this resolves what
+    the *callers* (``rag-query``, ``rag-eval``, ``POST /query``, ``POST /answer``)
+    should do when the caller did not say either way. It is per-profile because
+    the cross-encoder helps or hurts depending on the corpus: on the personal KB
+    it costs overall recall@5 (0.911 → 0.844 on the golden set — it reshuffles
+    inside top-5 but ejects some rank-1 hits), so that profile sets it False.
+    Falls back to True when the key is absent, preserving pre-2026-07-27 behavior
+    for configs that predate it.
+    """
+    return bool((config or {}).get("rerank_default", True))
+
+
 def build_where(domain=None, type_=None, source=None, confidence=None, subdomain=None, status=None):
     """Build a ChromaDB metadata filter from optional field constraints.
 
@@ -218,19 +233,24 @@ def main():
                              "case-insensitive). Repeatable; multiple --tag = AND.")
     parser.add_argument("--json", dest="output_json", action="store_true",
                         help="Output results as a JSON array")
-    parser.add_argument("--no-rerank", dest="rerank", action="store_false",
-                        help="Disable cross-encoder reranking (dense retrieval only)")
-    parser.set_defaults(rerank=True)
+    rr = parser.add_mutually_exclusive_group()
+    rr.add_argument("--rerank", dest="rerank", action="store_true", default=None,
+                    help="Force cross-encoder reranking on (overrides rerank_default)")
+    rr.add_argument("--no-rerank", dest="rerank", action="store_false",
+                    help="Disable cross-encoder reranking (dense retrieval only)")
     args = parser.parse_args()
 
     query = " ".join(args.query)
     config = load_config()
     setup_logging(config, console=False)  # log to file only; results print to stdout
 
+    # Neither flag given → fall back to the profile's rerank_default.
+    rerank = args.rerank if args.rerank is not None else rerank_default(config)
+
     where = build_where(args.domain, args.type_, args.source, args.confidence, args.subdomain,
                         status=args.status)
     records = search(query, args.n_results, filters=where, tags=args.tag, config=config,
-                     rerank=args.rerank)
+                     rerank=rerank)
 
     if args.output_json:
         output = [

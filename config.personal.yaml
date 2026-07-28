@@ -74,12 +74,16 @@ query_instruction: ""
 
 # Cross-encoder reranker (query-time only, no reindex). search()/rag-query
 # retrieve rerank_fetch_k dense candidates, then reorder to the requested
-# n_results with this model. Default-on; disable with `rag-query --no-rerank`
-# or `make eval ARGS=--no-rerank`. The model is ~80 MB and, like the embedder,
+# n_results with this model. The model is ~80 MB and, like the embedder,
 # is fetched from HF at first use — it must be present in the Jetson HF cache
 # for offline runs (it ships in the already-pinned sentence-transformers).
 reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
 rerank_fetch_k: 20
+# Off by default on this corpus — measured 2026-07-27, reranking LOSES overall
+# recall@5 (0.911 → 0.844): it reorders usefully inside top-5 but ejects some
+# rank-1 vault hits entirely. Override per call with `rag-query --rerank` or
+# `"rerank": true` in the request body. See CLAUDE.md roadmap item 5.
+rerank_default: false
 # Dense candidate-pool floor when a --tag filter is active. Tags are post-filtered
 # (Chroma 0.6.3 can't query the comma-joined tags string), so the pool must be wide
 # enough that matches survive the post-filter. Only applies when tags are supplied.

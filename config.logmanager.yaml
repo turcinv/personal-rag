@@ -87,6 +87,11 @@ query_instruction: ""
 # pages) once there's a wiki eval set to measure against.
 reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
 rerank_fetch_k: 40
+# Left ON here, unlike the personal profile. The personal corpus was measured
+# (2026-07-27) and rerank lost overall recall@5 there, but that finding is
+# corpus-specific and there is no wiki eval set yet — so this keeps the previous
+# behaviour until it can be measured rather than assuming it transfers.
+rerank_default: true
 # Heavier candidate pool than the personal profile's 200 — x86 has no 8 GB
 # ceiling, so the tag-filter floor can be generous.
 tag_fetch_k: 400

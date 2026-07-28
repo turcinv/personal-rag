@@ -140,7 +140,7 @@ Request body:
 |---|---|---|---|
 | `query` | string | — | **Required.** Whitespace-stripped; empty → `422`. |
 | `n_results` | int | `8` | Bounded `1..50` (out of range → `422`). |
-| `rerank` | bool | `true` | Cross-encoder reranking; `false` = dense retrieval only. |
+| `rerank` | bool \| null | `null` | Cross-encoder reranking; `false` = dense retrieval only. **Omit it** to use the server profile's `rerank_default` (`false` on the personal profile — see [configuration.md](configuration.md)); pass `true`/`false` to force it for this call. |
 | `filters` | object | `null` | Optional metadata constraints (all `$eq`). |
 
 `filters` fields (all optional, all strings): `domain`, `subdomain`, `type`,
@@ -203,7 +203,7 @@ Request body (retrieval knobs mirror `/query`):
 |---|---|---|---|
 | `query` | string | — | **Required.** Whitespace-stripped; empty → `422`. |
 | `n_results` | int | `8` | Chunks fed to the LLM as context. Bounded `1..20` (tighter than `/query`'s 50 to bound prompt/cost). |
-| `rerank` | bool | `true` | Same cross-encoder rerank as `/query`. |
+| `rerank` | bool \| null | `null` | Same cross-encoder rerank as `/query`, including the `rerank_default` fallback when omitted. |
 | `filters` | object | `null` | Same shape as `/query` (`domain`, `subdomain`, `type`, `source`, `confidence`, `status`, `tags`). |
 | `max_tokens` | int | `null` | Override the configured generation `max_tokens` for this call (`1..4096`). |
 | `temperature` | float | `null` | Override the configured `temperature` (`0.0..2.0`). |

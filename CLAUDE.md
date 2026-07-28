@@ -156,7 +156,7 @@ personal-rag/
 
 ## What gets indexed (and how) — current behavior
 
-- **Vault Markdown** (~2,148 notes): frontmatter → metadata. Before embedding, each note's
+- **Vault Markdown** (~2,996 indexed notes of 3,363 `.md` in the vault): frontmatter → metadata. Before embedding, each note's
   body is stripped of the navigation tail (`# Related Topics` / `## Potential New Notes`) and
   inline `[[wikilink]]` syntax — the link graph still lands in the `wikilinks` metadata field
   (extracted from the full body first). See `chunking.strip_navigation_tail` / `strip_wikilink_syntax`.
@@ -164,12 +164,24 @@ personal-rag/
 - **PDF sources are a fallback only**: any PDF whose `file_name` is covered by a JSON doc is
   **skipped** (dedup), so books index exactly once. Live PDF parsing only handles new files the
   extractor hasn't processed yet. (See `extractors.iter_sources` / `_json_covered_filenames`.)
+  **Gotcha:** dedup matches the *full filename incl. extension*. A book present as both `x.epub`
+  and `x.pdf` extracts to one `text_output/x.json` (stem collision, epub wins), so `indexed/`
+  is epub-keyed and the `.pdf` twin counts as uncovered → live-parsed into a duplicate chunk set.
+  Both the PDF glob and the extractor's listing are non-recursive, so park the redundant twin in
+  a subdir (`Books/_superseded/`). Done 2026-07-27 for the two Java titles.
 - **Excluded**: `Resources/Generated` (auto catalog stubs that double-cover JSON), `* MOC.md`
   (navigation-only wikilink indexes, via `exclude_filename_patterns`), plus Templates/Archive/etc.
+- **Broken YAML frontmatter silently drops a note from the index.** An unquoted colon in a
+  value (`title: Modbus Troubleshooting: Resolving …`) makes `frontmatter.loads` raise, the
+  indexer logs one `SKIP <name>: mapping values are not allowed in this context` line among
+  thousands, and the note ends up with **zero chunks** — it is unsearchable, not merely stale.
+  Three notes were in this state until 2026-07-27. Audit with:
+  `grep -c "SKIP .*mapping values" logs/rag.log` after a run; fix by quoting the value.
 
 ## ChromaDB state
 
-- Collection: `obsidian_markdown` (model `all-MiniLM-L6-v2`, 143,555 chunks). The
+- Collection: `obsidian_markdown` (model `all-MiniLM-L6-v2`, **202,132 chunks** as of
+  2026-07-27 — 16,167 from 2,996 vault notes + 185,965 from 259 books/resources). The
   name encodes the model: chunk IDs hash chunk *text*, not the embedding, so a
   model swap must use a fresh collection or old vectors silently survive.
   `obsidian_markdown_bge_small` (`bge-small-en-v1.5`) and `obsidian_markdown_gte_small`
@@ -261,11 +273,39 @@ Summary, ranked by impact/effort — do these in order, and build the eval set (
    paragraph/sentence boundaries via `chunking.chunk_paragraphs` (never mid-
    sentence); the real heading replaces the old `part N`. Takes effect on the
    next reindex (book/resource chunk IDs change → incremental re-embed + prune).
-5. **[DONE]** ~~Add a cross-encoder rerank step.~~ `query.py` `search()` retrieves
-   `rerank_fetch_k` (20) dense candidates and reorders to the top `n_results` with
-   `cross-encoder/ms-marco-MiniLM-L-6-v2`. **Default-on**; `rag-query --no-rerank`
-   / `make eval ARGS=--no-rerank` disables it. Query-time only, no reindex.
-   Config: `reranker_model`, `rerank_fetch_k`.
+5. **[DONE — default is now per-profile and measured]** ~~Add a cross-encoder rerank
+   step.~~ `query.py` `search()` retrieves `rerank_fetch_k` (20) dense candidates and
+   reorders to the top `n_results` with `cross-encoder/ms-marco-MiniLM-L-6-v2`.
+   Query-time only, no reindex. Config: `reranker_model`, `rerank_fetch_k`,
+   **`rerank_default`**.
+
+   `search()` always defaults to `rerank=False`; what the *callers* do when the caller
+   said nothing is resolved by `query.rerank_default(config)` — one seam shared by
+   `rag-query`, `rag-eval`, `POST /query` and `POST /answer` (absent key ⇒ `True`, the
+   pre-2026-07-27 behaviour). Per call: `rag-query --rerank` / `--no-rerank`, or
+   `"rerank": true|false` in the request body (omit the field to take the profile default).
+   **`config.yaml` / `config.personal.yaml` set `false`; `config.logmanager.yaml` keeps
+   `true`** — the finding below is corpus-specific and there is no wiki eval set yet.
+
+   **Measured 2026-07-27 on the 45-query golden set (202,132 chunks), both modes same run:**
+
+   | | rerank OFF | rerank ON |
+   |---|---|---|
+   | overall recall@5 | **0.911** | 0.844 |
+   | overall recall@10 | **0.956** | 0.933 |
+   | vault recall@5 | **0.900** | 0.767 |
+   | resource recall@5 | 0.933 | **1.000** |
+   | resource MRR | 0.910 | **1.000** |
+
+   Per-query: rerank moved 7 queries up and 7 down, but asymmetrically — six of the seven
+   wins are reshuffles *inside* top-5 (4→3, 2→1, 3→2) that only lift MRR, while the losses
+   eject correct hits from top-5 entirely (1→8, 2→8, 1→6, 2→7, 9→miss). Net −3 queries at
+   k=5. The one substantive win is a resource query (7→1), which is what takes resource
+   recall@5 to 1.000. **On this corpus rerank trades vault recall for resource ordering and
+   loses overall.** Snapshots: `tests/eval/post_update_{rerank,norerank}.json`. Flipping the
+   default is a live behaviour change for `rag-query` and the `/query` + `/answer` endpoints,
+   so it is left as an open decision — note the eval only scores retrieval, not `/answer`
+   synthesis quality, which rerank may still help.
 6. **BM25/lexical hybrid path** — highest raw impact, highest effort (1-2 days,
    possibly a store change). Do last, after the eval set exists. **On the
    OpenSearch backend this is free** — it's the native `hybrid=True` path, not
