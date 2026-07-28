@@ -9,10 +9,12 @@ Local retrieval index for an Obsidian knowledge vault + a PDF book/resource libr
 - Extracts text from PDF/EPUB/Markdown source documents (PyMuPDF + Tesseract OCR)
 - Builds a classified, FTS-searchable SQLite index of all books/resources + vault notes
 - Generates per-resource Obsidian note stubs and injects backlinks into Topic MOCs
-- Indexes vault Markdown notes and document JSON into a local ChromaDB collection
-- Retrieves relevant chunks by semantic similarity query
+- Indexes vault Markdown notes and document JSON into a local collection, reached
+  through the pluggable `RetrievalStore` seam (`src/rag/store/`, ChromaDB today)
+- Retrieves relevant chunks by semantic similarity query, optionally reordered by a
+  cross-encoder reranker — all callers share one `query.search()`
 - Serves retrieval (and triggers reindexing) over HTTP via a JWT-authenticated FastAPI
-  backend (`rag-serve`) that loads the model/collection/reranker once at startup
+  backend (`rag-serve`) that loads the model/store/reranker/generator once at startup
 - Optionally synthesizes grounded, cited answers over the retrieved chunks via the
   `POST /answer` endpoint (the `generation/` layer). This sits ABOVE `search()` and is
   orthogonal to the store — off by default; enabled per-profile with a `generation`
@@ -53,12 +55,18 @@ make dup-detect       # near-duplicate detection report
 make link-mocs        # inject resource backlinks into Topic MOCs
 make search Q="..."   # CLI FTS search over resources.db
 
-# Run offline unit tests (pytest). Install dev deps first: uv pip install -e ".[dev]"
+# Run offline unit tests (pytest, ~171 tests, no network/model/index needed).
+# `make install` uses --no-deps so it does NOT install pytest — add it once:
+#   uv pip install pytest
 make test-unit                      # or: .venv/bin/python -m pytest tests/
 
 # Run retrieval smoke tests (needs a populated index)
 .venv/bin/python tests/test_queries.py
 .venv/bin/python tests/test_queries.py kubernetes   # filter by keyword
+
+# Measure retrieval quality (needs a populated index)
+make eval                           # recall@5/@10 + MRR over tests/eval/golden_queries.jsonl
+make eval ARGS=--rerank             # compare rerank modes on the same index
 
 # Recreate environment from scratch
 uv venv .venv
@@ -83,8 +91,14 @@ personal-rag/
 │   │   │   ├── pdf.py         #   extract_pdf_file, clean_pdf_title
 │   │   │   └── json_doc.py    #   extract_json_doc (pre-extracted indexed/*.json)
 │   │   ├── indexing.py       # incremental engine: embed/upsert, per-file diff, run_source
-│   │   ├── indexer.py        # main() orchestration (MD + PDF + JSON → ChromaDB); entry: rag-index
-│   │   ├── query.py          # semantic query CLI + search()/build_where seam; entry: rag-query
+│   │   ├── indexer.py        # main() orchestration (MD + PDF + JSON → store); 0-files guard; entry: rag-index
+│   │   ├── query.py          # search()/build_where/rerank_default seam + query CLI; entry: rag-query
+│   │   ├── eval.py           # recall@5/@10 + MRR over tests/eval/golden_queries.jsonl (make eval)
+│   │   ├── pipeline_status.py # extractor pipeline pre-flight check; entry: rag-pipeline-status
+│   │   ├── store/            # pluggable backend seam (ADR Axis 2) — ONLY place chromadb is imported
+│   │   │   ├── base.py        #   RetrievalStore Protocol (9 members incl. snapshot/update_metadata)
+│   │   │   ├── chroma_store.py #  ChromaStore — the one implementation
+│   │   │   └── __init__.py    #   get_store(config, collection_name); rejects any store but "chroma"
 │   │   ├── generation/       # answer-synthesis layer ABOVE search() (retrieval ≠ chatbot); orthogonal to store
 │   │   │   ├── base.py        #   Generator Protocol + AnswerResult + shared build_prompt/format_contexts ([n] citations)
 │   │   │   ├── anthropic_gen.py #  AnthropicGenerator (Messages API via httpx, no SDK)
@@ -105,18 +119,29 @@ personal-rag/
 │       ├── enrich_metadata.py # enrich inventory from embedded fields + ISBNs; entry: rag-enrich
 │       ├── build_index_documents.py  # join inventory + text; entry: rag-build-index
 │       ├── build_obsidian_notes.py   # generate Resource Notes; entry: rag-build-notes
+│       ├── build_books_index.py  # regenerate Resources/Generated/Books Index.md; entry: rag-build-books-index
 │       ├── build_sqlite.py    # FTS5 SQLite database; entry: rag-build-sqlite
 │       ├── build_vault_index.py  # vault notes → JSONL; entry: rag-build-vault-index
 │       ├── dup_detect.py      # near-duplicate detection; entry: rag-dup-detect
 │       ├── link_mocs.py       # inject backlinks into MOCs; entry: rag-link-mocs
 │       └── search.py          # CLI FTS search; entry: rag-search
-├── tests/
+├── tests/                    # `make test-unit` runs everything here EXCEPT test_queries.py
+│   ├── conftest.py           # collect_ignore = ["test_queries.py"] (needs a real index + model)
 │   ├── test_chunking.py      # unit: chunking/ID helpers
 │   ├── test_extractors.py    # unit: markdown/pdf/json extractors (rag package)
 │   ├── test_extractor.py     # unit: extractor package (detect_type, merge, shingles, etc.)
 │   ├── test_indexing.py      # unit: incremental engine + idempotency (fake model + temp chroma)
-│   └── test_queries.py       # 13-query retrieval smoke tests (needs a populated index)
-├── .github/workflows/ci.yml  # CI: runs the offline unit suite on push/PR (Python 3.10)
+│   ├── test_store.py         # unit: ChromaStore parity, config profiles, chromadb-confinement guard
+│   ├── test_query_search.py  # unit: search() seam — dense pool, rerank reorder/trim, fetch width
+│   ├── test_generation.py    # unit: generation layer (httpx.MockTransport, no network)
+│   ├── test_eval.py          # unit: eval matching/aggregation + golden-set well-formedness
+│   ├── test_api.py           # unit: FastAPI backend via TestClient + fake state (dependency_overrides)
+│   ├── test_queries.py       # 13-query retrieval smoke test (needs a populated index; NOT collected)
+│   └── eval/                 # golden_queries.jsonl (45 labelled queries) + recorded eval snapshots
+├── scripts/
+│   ├── eval_recall.py        # shim → rag.eval.main (make eval)
+│   └── drop_collections.py   # drop rejected trial collections (bge/gte)
+├── .github/workflows/ci.yml  # CI: runs the offline unit suite on push/PR (Python 3.10 only)
 ├── Dockerfile                # x86 / macOS container image (python:3.10-slim + tesseract)
 ├── Dockerfile.jetson         # Jetson JetPack 6.2 container image (build on Jetson)
 ├── docker-compose.yml        # x86 Compose with volume mounts (RAG + extractor paths)
@@ -135,24 +160,53 @@ personal-rag/
 ├── requirements.txt          # full pinned lockfile — x86 / macOS (compiled for Python 3.10)
 ├── requirements-jetson.txt   # pinned deps — Jetson JetPack 6.2 (aarch64, CUDA 12.6)
 ├── docs/
-│   ├── architecture.md       # pipeline walkthrough, chunk IDs, telemetry workaround
-│   ├── configuration.md      # full config.yaml reference and env var overrides
-│   └── jetson.md             # Jetson install, Docker, memory budget, GPU constraints
+│   ├── architecture.md       # pipeline, chunk IDs, store seam, rerank, generation, telemetry
+│   ├── configuration.md      # full config reference, env var overrides, config profiles
+│   ├── jetson.md             # Jetson install, Docker, memory budget, GPU constraints
+│   ├── api.md                # HTTP backend: endpoints, JWT, client examples
+│   ├── ADR-multi-corpus-profiles-and-pluggable-store.md   # Axis 1 + 2 design decision
+│   ├── OPENSEARCHSTORE_IMPLEMENTATION_PLAN.md             # Axis 3 — planned, not built
+│   ├── RAG_ITEM7_TAG_STATUS_FILTERS_PLAN.md               # completed, kept for history
+│   └── archive/              # historical reports + completed plans — NOT current reference
 ├── README.md                 # setup and usage guide
 └── CLAUDE.md                 # this file
 ```
 
 ## Key dependencies (pinned)
 
-| Package | Version |
-|---|---|
-| chromadb | 0.6.3 |
-| sentence-transformers | 3.3.1 |
-| python-frontmatter | 1.3.0 |
-| PyYAML | 6.0.3 |
-| pypdf | 6.12.2 |
-| PyMuPDF | >=1.24 (PDF/EPUB extraction, OCR page rendering) |
-| cryptography | >=3.1 (AES-encrypted PDF support) |
+Declared in `requirements-direct.txt` (the source of truth) and mirrored in
+`pyproject.toml`; `requirements.txt` is the compiled lockfile and
+`requirements-jetson.txt` the hand-maintained aarch64 equivalent.
+
+| Package | Version | Used for |
+|---|---|---|
+| chromadb | 0.6.3 | vector store behind `ChromaStore` |
+| sentence-transformers | 3.3.1 | bi-encoder embedder **and** the CrossEncoder reranker |
+| torch | 2.5.1 | installed separately per arch — see `pyproject.toml` header |
+| python-frontmatter | 1.3.0 | vault note YAML frontmatter |
+| PyYAML | 6.0.3 | config profiles |
+| pypdf | 6.12.2 | live PDF parsing fallback (`extractors/pdf.py`) |
+| PyMuPDF | >=1.24 | PDF/EPUB extraction, OCR page rendering (`src/extractor/`) |
+| cryptography | >=3.1 | AES-encrypted PDF support |
+| posthog | 7.17.0 | pinned only to keep the chromadb telemetry patch working |
+| python-dotenv | 1.2.2 | `.env` path overrides |
+| fastapi | 0.136.3 | HTTP backend (`rag-serve`) |
+| uvicorn[standard] | 0.49.0 | ASGI server for `rag-serve` |
+| pyjwt | 2.13.0 | HS256 bearer auth (`api/auth.py`) |
+| httpx | 0.28.1 | provider REST calls in `generation/` (no provider SDK) |
+
+**Tesseract is a system binary, not a Python package** — `src/extractor/extract_text.py`
+shells out to it, so there is deliberately no `pytesseract` dependency. It is installed
+in both Dockerfiles and in CI.
+
+Regenerate the lockfile after touching `requirements-direct.txt`:
+
+```bash
+uv pip compile requirements-direct.txt --python-version 3.10 -o requirements.txt
+```
+
+`requirements-jetson.txt` is **not** generated — add new direct deps to it by hand,
+pinned to whatever the x86 compile resolved.
 
 ## What gets indexed (and how) — current behavior
 
@@ -187,7 +241,9 @@ personal-rag/
   `obsidian_markdown_bge_small` (`bge-small-en-v1.5`) and `obsidian_markdown_gte_small`
   (`thenlper/gte-small`) were both trialled and rejected (net regression vs MiniLM).
   See docs/architecture.md → "Changing the embedding model".
-- Metadata fields: `path`, `title`, `heading`, `type`, `domain`, `status`, `source`, `confidence`, `tags`, `wikilinks`
+- Metadata fields: `path`, `title`, `heading`, `type`, `domain`, `subdomain`, `status`, `source`, `confidence`, `tags`, `wikilinks`.
+  `subdomain` comes from frontmatter or the containing subfolder (`extractors/markdown.py`)
+  and is filterable via `--subdomain` / `filters.subdomain`.
 - Reindexing is incremental: chunk IDs are SHA-256 of the full chunk content, so unchanged chunks are skipped, changed/new ones embedded, and stale chunks (edited or deleted sources) pruned. The collection is never wiped. **Note:** the nav-tail/wikilink stripping changed chunk text, so the first run after those changes re-embeds the vault and prunes the old chunks (expected one-time churn).
 
 ## Config profiles
@@ -225,16 +281,19 @@ Full comparison table + two-instance run details: docs/configuration.md →
 #    GCS/Google Drive are no longer used as of 2026-07; disk is the single source of truth)
 # 2. Add the classification record to Resources/_catalog/resource_inventory.jsonl
 # 3. Run the extraction pipeline
-make extract        # extract text
-make enrich         # enrich metadata
-make build-index    # produce indexed/*.json
-make build-notes    # update Resource Notes in the vault
-make build-sqlite   # update FTS database
-make link-mocs      # update MOC backlinks
+make extract            # extract text
+make enrich             # enrich metadata
+make build-index        # produce indexed/*.json
+make build-notes        # update Resource Notes in the vault
+make build-books-index  # regenerate Resources/Generated/Books Index.md (else it drifts)
+make build-sqlite       # update FTS database
+make link-mocs          # update MOC backlinks
 
-# 4. Reindex into ChromaDB
+# 4. Reindex
 make index          # or: make jetson-index if running on Jetson
 ```
+
+Verify the inputs/outputs of each step first with `make pipeline-status`.
 
 ## Known Limitations & Improvement Roadmap (RAG quality review, 2026-07-13)
 
@@ -281,7 +340,7 @@ Summary, ranked by impact/effort — do these in order, and build the eval set (
 
    `search()` always defaults to `rerank=False`; what the *callers* do when the caller
    said nothing is resolved by `query.rerank_default(config)` — one seam shared by
-   `rag-query`, `rag-eval`, `POST /query` and `POST /answer` (absent key ⇒ `True`, the
+   `rag-query`, `make eval`, `POST /query` and `POST /answer` (absent key ⇒ `True`, the
    pre-2026-07-27 behaviour). Per call: `rag-query --rerank` / `--no-rerank`, or
    `"rerank": true|false` in the request body (omit the field to take the profile default).
    **`config.yaml` / `config.personal.yaml` set `false`; `config.logmanager.yaml` keeps
@@ -325,8 +384,36 @@ Summary, ranked by impact/effort — do these in order, and build the eval set (
 
 | Document | Contents |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | Pipeline walkthrough, chunk IDs, ChromaDB state, telemetry workaround |
-| [docs/configuration.md](docs/configuration.md) | All `config.yaml` fields, env var overrides, hardware tuning table, config profiles |
-| [docs/jetson.md](docs/jetson.md) | Jetson-specific install, Docker, memory budget, IPC constraints |
+| [docs/architecture.md](docs/architecture.md) | Pipeline walkthrough, chunk IDs, store seam, anti-wipe guard, rerank, generation layer, telemetry workaround |
+| [docs/configuration.md](docs/configuration.md) | All config fields, env var overrides, hardware tuning table, config profiles |
+| [docs/jetson.md](docs/jetson.md) | Jetson-specific install, Docker, memory budget, IPC constraints, reranker cache prep |
 | [docs/api.md](docs/api.md) | HTTP backend: endpoints, JWT auth, `rag-serve`/`rag-token`, `make serve`/`jetson-serve`, client examples |
 | [docs/ADR-multi-corpus-profiles-and-pluggable-store.md](docs/ADR-multi-corpus-profiles-and-pluggable-store.md) | Design decision behind config profiles (Axis 1) + the pluggable `RetrievalStore` (Axis 2) |
+| [docs/OPENSEARCHSTORE_IMPLEMENTATION_PLAN.md](docs/OPENSEARCHSTORE_IMPLEMENTATION_PLAN.md) | Axis 3 — planned OpenSearch backend, where roadmap item 6 (hybrid BM25) lands. Not built |
+| [docs/archive/](docs/archive/) | Historical reports and completed plans. **Not current reference** — several contradict the code; see its README |
+
+## Known drift and deferred work (audited 2026-07-28)
+
+Found during a full repo review, deliberately not fixed:
+
+- **`src/rag/api/jobs.py`** — the reindex job registry is never pruned; one record +
+  thread ref per reindex lives for the server process's lifetime. The only `TODO` in
+  `src/`. Harmless in practice (reindexes are rare).
+- **Two dead config keys** are set in all three profiles but read nowhere:
+  `embedding_workers` (the streaming indexer supersedes it) and `include_extensions`
+  (markdown discovery is a hardcoded `rglob("*.md")`).
+- **There is no `rag-eval` console script**, unlike the other 16 `rag-*` entry points.
+  The eval harness runs via `make eval` (→ `scripts/eval_recall.py`) or
+  `python -m rag.eval`. Stale references to `rag-eval` as a command were corrected on
+  2026-07-28; adding the entry point would be the tidier fix.
+- **`make install` cannot run `make test-unit`** — `pytest` is only in the `dev` extra,
+  which `--no-deps` skips. `uv pip install pytest` separately.
+- **CI covers Python 3.10 only**, not the 3.12 used for macOS development, and has no
+  lint or type-check step. `ci.yml`'s comment claims a `<3.11` pin that doesn't exist.
+- **Config profiles don't work in Docker** — both images copy only `config.yaml` and
+  neither Compose file passes `RAG_CONFIG_PATH`. Axis 1 is host-venv-only.
+- **`tests/eval/baseline.json` is stale** (205,476 chunks, 2026-07-20). Compare against
+  `post_update_norerank.json` (202,132) or refresh it.
+- **`config.logmanager.yaml`'s `vault_path` doesn't exist yet** (declared placeholder).
+  Indexing that profile creates an empty `wiki_lm` collection without erroring — the
+  anti-wipe guard can't fire on an already-empty index.

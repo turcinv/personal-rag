@@ -117,14 +117,14 @@ health checks and readiness polling.
 
 ### `GET /status`
 
-**Auth required.** Reports the live ChromaDB state so a caller can tell whether
+**Auth required.** Reports the live store state so a caller can tell whether
 the index is actually populated.
 
 ```
 200 OK
 {
   "collection": "obsidian_markdown",
-  "count": 143555,
+  "count": 202132,
   "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
   "reranker_model": "cross-encoder/ms-marco-MiniLM-L-6-v2"
 }
@@ -141,11 +141,25 @@ Request body:
 | `query` | string | — | **Required.** Whitespace-stripped; empty → `422`. |
 | `n_results` | int | `8` | Bounded `1..50` (out of range → `422`). |
 | `rerank` | bool \| null | `null` | Cross-encoder reranking; `false` = dense retrieval only. **Omit it** to use the server profile's `rerank_default` (`false` on the personal profile — see [configuration.md](configuration.md)); pass `true`/`false` to force it for this call. |
-| `filters` | object | `null` | Optional metadata constraints (all `$eq`). |
+| `filters` | object | `null` | Optional metadata constraints. |
 
-`filters` fields (all optional, all strings): `domain`, `subdomain`, `type`,
-`source`, `confidence`. They map to `query.build_where` — omitted/null fields
-impose no constraint.
+`filters` fields — all optional; omitted/null fields impose no constraint:
+
+| Field | Type | How it filters |
+|---|---|---|
+| `domain` | string | native `$eq` via `query.build_where` |
+| `subdomain` | string | native `$eq` |
+| `type` | string | native `$eq` (maps to `build_where`'s `type_`) |
+| `source` | string | native `$eq` |
+| `confidence` | string | native `$eq` |
+| `status` | string | native `$eq` |
+| `tags` | list of strings | **post-filter** inside `query.search()` — exact, case-insensitive, multiple tags ANDed |
+
+`tags` is the one that behaves differently: tags are stored as a single
+comma-joined string, which Chroma cannot filter natively, so `search()` widens the
+candidate pool to `tag_fetch_k` (default 200) and filters in Python. Matching is
+exact per tag — `ci` does not match `ci-cd`. Ranking is unchanged when no tags are
+supplied.
 
 Response body:
 
@@ -288,6 +302,12 @@ unknown. Server-side log paths are never included in the body.
 `failed` immediately). On failure, `error` carries a short reason (the tail of
 the indexer log, e.g. the anti-wipe `RuntimeError` message) and `returncode` the
 process exit code.
+
+> **Job records are retained for the life of the server process.** The registry is
+> in-process and is not pruned or TTL'd, so a job id stays queryable until restart —
+> convenient, but it means a very long-lived server accumulates one record (and one
+> thread reference) per reindex. Harmless in practice since reindexes are rare;
+> tracked as a `TODO` in `src/rag/api/jobs.py`.
 
 ## Examples
 

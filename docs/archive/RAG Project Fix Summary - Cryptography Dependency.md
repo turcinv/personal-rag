@@ -1,5 +1,16 @@
 # RAG Project Fix Summary — Cryptography Dependency
 
+> **HISTORICAL — written 2026-06-05 (the file originally carried no date). ARCHIVED 2026-07-28.**
+> The conclusion still stands: `cryptography>=3.1` is required for AES-encrypted PDFs and
+> is declared in `requirements-direct.txt`, `requirements-jetson.txt` and `pyproject.toml`.
+> Everything procedural is stale — do **not** run the commands below:
+> - The decrypt call moved from `src/rag/indexer.py` to `src/rag/extractors/pdf.py`.
+> - **`rm -rf chroma_db` is harmful now.** Indexing is incremental and content-hashed;
+>   deleting the store discards ~202k chunks and forces a full re-embed (hours on the
+>   Jetson) to reach the same state. Just re-run `make index`.
+> - The repo path is `/Users/turcinv/Documents/personal-rag`, and commands must use
+>   `.venv/bin/...`, never bare `pip` / `python`.
+
 ## Summary
 
 Some PDFs in the book and resource libraries (e.g. `begintocodewithpython.pdf`) are

@@ -31,7 +31,7 @@ def rerank_default(config: dict) -> bool:
     """Whether reranking is on by default for this config profile.
 
     ``search()`` itself always defaults to ``rerank=False``; this resolves what
-    the *callers* (``rag-query``, ``rag-eval``, ``POST /query``, ``POST /answer``)
+    the *callers* (``rag-query``, ``make eval``, ``POST /query``, ``POST /answer``)
     should do when the caller did not say either way. It is per-profile because
     the cross-encoder helps or hurts depending on the corpus: on the personal KB
     it costs overall recall@5 (0.911 → 0.844 on the golden set — it reshuffles

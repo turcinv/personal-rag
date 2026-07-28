@@ -13,6 +13,7 @@ collection_name: "obsidian_markdown"
 exclude_dirs:
   - ".obsidian"
   - ".trash"
+  - ".claude"
   - "Resources/_catalog"
   - "Resources/Generated"
   - "Attachments"
@@ -35,10 +36,12 @@ store: chroma
 chunk_max_chars: 1200
 chunk_overlap_chars: 150
 embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+query_instruction: ""
 embedding_batch_size: 16
 markdown_workers: 1
 pdf_workers: 1
-embedding_workers: 1   # legacy, reserved
+embedding_workers: 1     # DEAD — read nowhere, see below
+include_extensions: [".md"]   # DEAD — read nowhere, see below
 
 pdf_sources:
   - path: '/path/to/Books/'
@@ -48,7 +51,20 @@ pdf_sources:
 
 json_sources:
   - path: '~/Documents/knowledge-base-index/indexed'
+
+extractor:
+  books_path: '/path/to/Books/'
+  resources_path: '/path/to/Resources/'
+  catalog_path: '/path/to/Career Knowledge Base/Resources/_catalog'
+  output_path: '~/Documents/knowledge-base-index'
+  obsidian_notes_path: '/path/to/Career Knowledge Base/Resources/Generated/Resource Notes'
+  mocs_path: '/path/to/Career Knowledge Base/Resources/Generated'
 ```
+
+> **Two keys in this file are dead.** `embedding_workers` and `include_extensions`
+> are set in all three profiles but read nowhere in `src/`: the streaming indexer
+> superseded the first, and markdown discovery is a hardcoded `rglob("*.md")`. They
+> are kept only for schema parity — changing them has no effect.
 
 ### Field reference
 
@@ -65,17 +81,40 @@ json_sources:
 | `exclude_filename_patterns` | `* MOC.md` | fnmatch patterns applied to filenames in any directory. Used to skip domain MOCs — navigation-only wikilink indexes whose chunks would match many queries spuriously. The per-note link graph is still captured in the `wikilinks` metadata field. |
 | `chunk_max_chars` | `1200` | Maximum characters per chunk. Smaller = lower per-file RAM peak. |
 | `chunk_overlap_chars` | `150` | Character overlap between consecutive chunks. |
-| `embedding_model` | `all-MiniLM-L6-v2` | SentenceTransformers model name or HuggingFace path. |
+| `embedding_model` | `all-MiniLM-L6-v2` | SentenceTransformers model name or HuggingFace path. **Changing this requires a new `collection_name`** — chunk IDs hash the chunk text, not the vector, so the incremental engine would skip re-embedding and silently keep the old model's vectors. See [architecture.md](architecture.md#changing-the-embedding-model--new-collection-name-required). |
+| `query_instruction` | `""` | Instruction prefix prepended to the **query only** (never to indexed passages) before embedding. Some retrieval models need one — bge-small wants `"Represent this sentence for searching relevant passages: "`. Empty for all-MiniLM and gte-small. |
 | `embedding_batch_size` | `16` | Chunks per `model.encode()` call. Keep at 16 on Jetson (8 GB unified RAM). |
 | `markdown_workers` | `1` | ThreadPoolExecutor threads for MD extraction. 1 = sequential. |
 | `pdf_workers` | `1` | ThreadPoolExecutor threads for PDF extraction. Keep at 1 on Jetson. |
+| `embedding_workers` | `1` | **Dead key** — read nowhere in `src/`. Superseded by the streaming indexer. Kept for schema parity only. |
+| `include_extensions` | `[".md"]` | **Dead key** — read nowhere in `src/`. Markdown discovery is a hardcoded `rglob("*.md")`. Kept for schema parity only. |
 | `pdf_sources` | `[]` | List of `{path, type}` PDF source directories. `type` is stored as chunk metadata. Acts as a **fallback**: files whose name is already covered by a `json_sources` document are skipped, so configuring both never double-indexes. |
-| `json_sources` | `[]` | List of `{path}` dirs of pre-extracted document JSON (`doc-text-extractor` `indexed/*.json`): full `text` + metadata (title, primary_topic→domain, resource_type→type, tags, confidence). Deterministic, so re-runs are idempotent. |
+| `json_sources` | `[]` | List of `{path}` dirs of pre-extracted document JSON (`indexed/*.json`, produced by `src/extractor/`): full `text` + metadata (title, primary_topic→domain, resource_type→type, tags, confidence). Deterministic, so re-runs are idempotent. |
 | `reranker_model` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder used at query time (no reindex). |
 | `rerank_fetch_k` | `20` | Dense candidate pool retrieved before reranking down to `n_results`. |
-| `rerank_default` | `false` (this profile) | Whether `rag-query` / `rag-eval` / `POST /query` / `POST /answer` rerank when the caller says nothing. **Per-profile, because the cross-encoder is corpus-dependent** — measured 2026-07-27 it *loses* overall recall@5 on the personal corpus (0.911 → 0.844), so it is off here and on in `config.logmanager.yaml`. Override per call: `rag-query --rerank` / `--no-rerank`, or `"rerank": true\|false` in the request body. Absent from a config ⇒ falls back to `true` (pre-2026-07-27 behaviour). See CLAUDE.md roadmap item 5. |
+| `rerank_default` | `false` (this profile) | Whether `rag-query` / `make eval` / `POST /query` / `POST /answer` rerank when the caller says nothing. **Per-profile, because the cross-encoder is corpus-dependent** — measured 2026-07-27 it *loses* overall recall@5 on the personal corpus (0.911 → 0.844), so it is off here and on in `config.logmanager.yaml`. Override per call: `rag-query --rerank` / `--no-rerank`, or `"rerank": true\|false` in the request body. Absent from a config ⇒ falls back to `true` (pre-2026-07-27 behaviour). See CLAUDE.md roadmap item 5. |
 | `tag_fetch_k` | `200` | Dense pool floor when a `--tag` filter is active (tags are post-filtered — see roadmap item 7). Only applies when tags are supplied. |
 | `generation` | *(absent)* | Optional block enabling the `/answer` RAG endpoint. Absent ⇒ `/answer` returns `503`, `/query` unaffected. Sub-keys: `provider` (`anthropic`\|`openai`), `model` (required), `max_tokens` (`1024`), `temperature` (`0.0`), `timeout` (`60`), `api_key_env` (provider default: `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`), `base_url` (optional; OpenAI-compat servers). The API **key** is read from the env var named by `api_key_env`, never from this file. See [api.md](api.md#enabling-answer-generation). |
+
+### The `extractor:` block
+
+Paths used by the extraction pipeline (`src/extractor/`, the `rag-extract` /
+`rag-enrich` / `rag-build-*` entry points). Unrelated to indexing and retrieval —
+`vault_path` / `pdf_sources` / `json_sources` above are what the indexer reads.
+The whole block may be omitted (a markdown-only profile like
+`config.logmanager.yaml` does exactly that); every key falls back to empty.
+
+| Key | Description | Env override |
+|---|---|---|
+| `extractor.books_path` | Source dir of book PDFs/EPUBs to extract. Must be **local disk**, never a cloud-synced folder. | `RAG_BOOKS_PATH` |
+| `extractor.resources_path` | Source dir of resource PDFs/EPUBs. Same constraint. | `RAG_RESOURCES_PATH` |
+| `extractor.catalog_path` | Dir holding `resource_inventory.jsonl` — the classification records. A file with no catalog row is silently excluded from `build-index`. | `RAG_CATALOG_PATH` |
+| `extractor.output_path` | Where `text_output/`, `indexed/` and `resources.db` are written. This is the dir you rsync to the Jetson. | `RAG_OUTPUT_PATH` |
+| `extractor.obsidian_notes_path` | Destination for generated Resource Notes. | `RAG_OBSIDIAN_NOTES_PATH` |
+| `extractor.mocs_path` | Dir of Topic MOCs that `link-mocs` injects backlinks into. | `RAG_MOCS_PATH` |
+
+Both the PDF glob and the extractor's listing are **non-recursive**, which is what
+makes `Books/_superseded/` a working place to park a redundant pdf/epub twin.
 
 ## Environment variables
 
@@ -94,14 +133,39 @@ Override any path without editing `config.yaml`. Copy `.env.example` to `.env` �
 | `RAG_API_JWT_SECRET` | — (API only) | HS256 shared secret for the backend API (`rag-serve` / `rag-token`). **Required** to serve — protected routes return 500 if unset; no default. Use a strong secret (≥32 bytes; PyJWT warns on short keys). Only the API server needs it. |
 | `RAG_API_HOST` | — (API only) | Bind address for the API server. Default `0.0.0.0`. |
 | `RAG_API_PORT` | — (API only) | Bind port for the API server. Default `8000`. |
+| `RAG_BOOKS_PATH` | `extractor.books_path` | Extractor pipeline only. |
+| `RAG_RESOURCES_PATH` | `extractor.resources_path` | Extractor pipeline only. |
+| `RAG_CATALOG_PATH` | `extractor.catalog_path` | Extractor pipeline only. |
+| `RAG_OUTPUT_PATH` | `extractor.output_path` | Extractor pipeline only. |
+| `RAG_OBSIDIAN_NOTES_PATH` | `extractor.obsidian_notes_path` | Extractor pipeline only. |
+| `RAG_MOCS_PATH` | `extractor.mocs_path` | Extractor pipeline only. |
+
+> **The extractor `RAG_*` variables do double duty**, and this is the one place it
+> bites. The Python app reads them via `load_config()`, *and* Docker Compose reads
+> them at the host shell level to resolve `${VAR:-/tmp}` in its `volumes:` section.
+> An unset variable therefore does not raise — Compose mounts the host's `/tmp`, the
+> container sees an empty directory, and every pipeline step reports MISSING while
+> the data sits untouched on disk. Set all six before using any `docker-*` /
+> `jetson-*` extractor target. (`RAG_OBSIDIAN_NOTES_PATH` is the exception: both
+> Compose files hardcode it to `/mocs/Resource Notes` rather than interpolating it.)
 
 ### .env example
 
 ```bash
-RAG_VAULT_PATH=/Volumes/Drive/mindmap/Career Knowledge Base/
-RAG_PDF_BOOKS_PATH=/Volumes/Drive/mindmap/Books/
-RAG_PDF_RESOURCES_PATH=/Volumes/Drive/mindmap/Resources/
+RAG_VAULT_PATH=/Users/you/Documents/personal_knowledge/Career Knowledge Base/
+RAG_PDF_BOOKS_PATH=/Users/you/Documents/personal_knowledge/Books/
+RAG_PDF_RESOURCES_PATH=/Users/you/Documents/personal_knowledge/Resources/
+RAG_JSON_PATH=/Users/you/Documents/knowledge-base-index/indexed
 ```
+
+**Set `RAG_JSON_PATH` too.** A missing `RAG_VAULT_PATH`/`RAG_JSON_PATH` pair is what
+caused the 2026-07-15 index wipe on the Jetson (see CLAUDE.md). The indexer now
+refuses to prune when *every* source is empty, but a partially broken mount still
+prunes normally.
+
+Point these at **local disk**. Indexing a cloud-synced mirror (Google Drive,
+Dropbox) is unsupported — the vault copy there has a divergent history, and these
+paths drifted to exactly such a mirror once already.
 
 ## Tuning for different hardware
 
@@ -136,7 +200,7 @@ code change**. Two profiles ship today, run as two independent instances:
 | `rerank_default` | `false` — measured: rerank costs overall recall@5 (0.911 → 0.844) on this corpus | `true` — kept on until there is a wiki eval set; the personal-corpus finding is corpus-specific and may not transfer |
 | `tag_fetch_k` | 200 | 400 |
 | `embedding_batch_size` | 16 | 64 |
-| `*_workers` | 1 | `markdown_workers: 8`, `embedding_workers: 4` |
+| `*_workers` | 1 | `markdown_workers: 8` (`embedding_workers: 4` is also set but is a dead key — no effect) |
 | `collection_name` | `obsidian_markdown` | `wiki_lm` |
 | `index_path` | `./chroma_db` | `./chroma_db_wiki` |
 | `vault_path` | personal vault checkout | wiki repo checkout (placeholder path — update once the wiki checkout exists) |

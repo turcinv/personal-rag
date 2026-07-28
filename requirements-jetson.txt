@@ -29,3 +29,9 @@ python-dotenv==1.2.2
 fastapi==0.136.3
 uvicorn[standard]==0.49.0
 pyjwt==2.13.0
+
+# Answer-generation layer (/answer). The Anthropic/OpenAI backends in
+# src/rag/generation/ import httpx directly and call the provider REST APIs
+# without a provider SDK. httpx also resolves transitively via chromadb, but it
+# is declared here so a chromadb bump cannot silently remove it.
+httpx==0.28.1

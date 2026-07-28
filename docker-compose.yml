@@ -1,7 +1,14 @@
 # personal-rag — x86 / macOS
 #
-# Prerequisites: copy .env.example to .env and set RAG_VAULT_PATH,
-# RAG_PDF_BOOKS_PATH, RAG_PDF_RESOURCES_PATH.
+# Prerequisites: copy .env.example to .env and set ALL FOUR indexer paths —
+# RAG_VAULT_PATH, RAG_PDF_BOOKS_PATH, RAG_PDF_RESOURCES_PATH, RAG_JSON_PATH.
+# An unset variable resolves to ${VAR:-/tmp} below, which mounts the host's /tmp
+# (empty) instead of failing — a missing RAG_VAULT_PATH/RAG_JSON_PATH pair is what
+# caused the 2026-07-15 index wipe. To run the extractor pipeline in Docker you also
+# need RAG_OUTPUT_PATH, RAG_CATALOG_PATH and RAG_MOCS_PATH.
+#
+# Note: config profiles do not work here — the image copies only config.yaml and
+# this file does not pass RAG_CONFIG_PATH.
 #
 # Usage:
 #   docker compose run --rm rag python -m rag.indexer

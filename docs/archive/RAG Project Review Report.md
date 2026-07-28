@@ -1,5 +1,14 @@
 # RAG Project Review Report
 
+> **HISTORICAL — describes the pre-package MVP as of 2026-06-04. ARCHIVED 2026-07-28.**
+> The two scripts it reviews (`index_obsidian.py`, `query_obsidian.py`) no longer exist,
+> and most of its findings have since been fixed. Do **not** act on it. Notably wrong now:
+> the collection is **never** deleted and recreated (indexing is incremental with a prune
+> guard); incremental indexing *was* redesigned and works; `pyproject.toml`, `Makefile`,
+> `.gitignore` and a git repo all exist; the project targets Python **3.10**, not 3.12;
+> and the Google Drive vault copy it files under "What Works" is now explicitly forbidden
+> as a source. Chunk count 6,269 → ~202,132. Current state: [`../../CLAUDE.md`](../../CLAUDE.md).
+
 **Date:** 2026-06-04  
 **Project:** personal-rag — Local Obsidian Markdown RAG Index  
 **Reviewer:** Claude Code (automated review)
