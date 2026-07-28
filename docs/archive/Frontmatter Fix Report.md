@@ -1,5 +1,13 @@
 # Frontmatter Fix Report
 
+> **HISTORICAL — vault audit as of 2026-06-05. ARCHIVED 2026-07-28.**
+> This audits the **vault repo**, not this codebase. Its 26-file "needs manual review"
+> list was never closed here, its scan covered 1,639 files (the vault now has ~3,363),
+> and the audit script it invokes lived in `/tmp` and is gone — so it cannot be
+> reproduced or verified as written. For the current frontmatter failure mode and how
+> to detect it, see the "Broken YAML frontmatter" note in
+> [`../../CLAUDE.md`](../../CLAUDE.md).
+
 Generated: 2026-06-05  
 Vault: `/Users/turcinv/Documents/personal_knowledge/Career Knowledge Base`  
 Files scanned: 1,639

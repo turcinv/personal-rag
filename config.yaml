@@ -66,7 +66,7 @@ query_instruction: ""
 # for offline runs (it ships in the already-pinned sentence-transformers).
 reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
 rerank_fetch_k: 20
-# Whether rag-query / rag-eval / POST /query / POST /answer rerank when the caller
+# Whether rag-query / make eval / POST /query / POST /answer rerank when the caller
 # says nothing. Per-profile because the cross-encoder is corpus-dependent: measured
 # 2026-07-27 on this corpus it LOSES overall recall@5 (0.911 → 0.844) — it reorders
 # usefully inside top-5 but ejects some rank-1 hits entirely. Override per call with

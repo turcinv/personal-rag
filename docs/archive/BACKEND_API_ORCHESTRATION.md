@@ -1,5 +1,11 @@
 # Backend API for personal-rag — Orchestration Plan
 
+> **Status: SPENT — the run this scripts completed 2026-07-18 (`8fa0b71`). ARCHIVED 2026-07-28.**
+> All six steps below are done. The working-tree state it describes no longer exists,
+> and its claim that `pyjwt` is missing from both lockfiles is obsolete (both pin it).
+> Paths written as `docs/BACKEND_API_PLAN.md` below refer to where that file lived at
+> the time; it is now [`docs/archive/BACKEND_API_PLAN.md`](BACKEND_API_PLAN.md).
+
 ## Context
 
 `personal-rag` currently exposes retrieval only through the `rag-query` CLI, which

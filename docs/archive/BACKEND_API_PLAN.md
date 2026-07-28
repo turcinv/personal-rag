@@ -1,5 +1,12 @@
 # Backend API — Implementation Plan (for Claude Code)
 
+> **Status: IMPLEMENTED — merged 2026-07-18 (`8fa0b71`). ARCHIVED 2026-07-28.**
+> The backend this plans is live under `src/rag/api/`. Everything below is written
+> in future tense but is already built; read it for design rationale only, and treat
+> the code as authoritative wherever the two disagree. Current API reference:
+> [`docs/api.md`](../api.md). Known divergences and one explicitly rejected
+> suggestion are listed in [`docs/archive/README.md`](README.md).
+
 **Goal:** Add an HTTP backend (FastAPI) to `personal-rag` so network clients (Telegram
 RAG Bot, Logmanager Wiki RAG Chatbot) can call retrieval — and trigger indexing —
 without shelling out to the `rag-query` CLI. The CLI stays; the API is an additional

@@ -75,10 +75,26 @@ RAG_JSON_PATH=/home/turcinv/data/indexed
 # RAG_PDF_RESOURCES_PATH=/home/turcinv/data/resources
 ```
 
-Unset variables default to `/tmp` in the compose file, which simply yields an empty
-source. Re-running `make jetson-index` after a vault sync is incremental: chunk IDs
-are content-hashed, so unchanged notes are skipped and chunks from deleted/edited
-notes are pruned automatically — no need to wipe the `chroma` volume.
+Re-running `make jetson-index` after a vault sync is incremental: chunk IDs are
+content-hashed, so unchanged notes are skipped and chunks from deleted/edited notes
+are pruned automatically — no need to wipe the `chroma` volume.
+
+> **An unset variable is not a harmless no-op.** Compose resolves it to
+> `${VAR:-/tmp}` and mounts the host's `/tmp`, so the container sees a real but empty
+> directory — indistinguishable, to the indexer, from a source whose files were all
+> deleted. Combined with incremental pruning, that is what emptied the collection on
+> 2026-07-15 (172,557 chunks → 0).
+>
+> `indexer.main()` now raises `RuntimeError` and prunes nothing when **every** source
+> reports 0 files while the index holds chunks, so that exact failure can no longer
+> wipe anything. It does **not** protect a *partially* broken mount: if the vault
+> mounts but `RAG_JSON_PATH` doesn't, the book/resource chunks look legitimately
+> deleted and will be pruned. Verify the per-source counts in the startup log, and
+> if in doubt check what Compose actually resolved:
+>
+> ```bash
+> docker compose -f docker-compose.jetson.yml config | grep -A2 volumes
+> ```
 
 ## Memory budget
 
@@ -92,6 +108,29 @@ With 8 GB unified RAM shared between CPU and GPU, keep these config values:
 
 The streaming indexer never accumulates all chunks globally — peak RAM is bounded to one file's chunks at a time.
 
+**If you also run the API server**, budget for it separately: `rag-serve` holds the
+embedder (~90 MB) resident for the life of the process, plus the cross-encoder
+(~80 MB) once anything has requested a rerank, plus the Python/uvicorn baseline.
+That is the whole point of the server — the bots don't pay a cold start — but it
+means a reindex triggered while the server is up runs *alongside* those resident
+models. Indexing runs as a **subprocess**, so it has its own address space and a
+failure cannot take the server's models down with it; the two still share the same
+8 GB. For a large reindex on a memory-tight box, stop the server first.
+
+## Running the API server
+
+```bash
+make jetson-serve    # docker compose -f docker-compose.jetson.yml up api
+```
+
+Needs `RAG_API_JWT_SECRET` in `.env` (≥32 bytes) — protected routes return 500
+without it. Reached over Tailscale, internal only, no in-app TLS. Full endpoint
+reference and the Python client for the bots: [api.md](api.md).
+
+> Config profiles do not work in Docker: the image copies only `config.yaml` and
+> Compose does not pass `RAG_CONFIG_PATH`. The Jetson container therefore always
+> serves the default profile.
+
 ## Models in the HF cache (offline)
 
 Models are fetched from Hugging Face at first use into the `hf-cache` Docker volume, then reused. Two are needed:
@@ -99,9 +138,25 @@ Models are fetched from Hugging Face at first use into the `hf-cache` Docker vol
 | Model | ~Size | Fetched by | Config key |
 |---|---|---|---|
 | `all-MiniLM-L6-v2` (embedder) | ~90 MB | first `make jetson-index` | `embedding_model` |
-| `cross-encoder/ms-marco-MiniLM-L-6-v2` (reranker) | ~80 MB | first `make jetson-query` / `jetson-eval` (rerank is on by default) | `reranker_model` |
+| `cross-encoder/ms-marco-MiniLM-L-6-v2` (reranker) | ~80 MB | first query that **explicitly** reranks — see below | `reranker_model` |
 
-The Jetson needs network access the **first** time each model is used; after that the cache serves them offline. For a fully air-gapped box, pre-populate the `hf-cache` volume (or run one online query with `--no-rerank` omitted so the reranker downloads). Both fit the 8 GB budget alongside the bi-encoder. Disable reranking with `rag-query --no-rerank` / `make eval ARGS=--no-rerank` if you want to skip loading the cross-encoder entirely.
+The Jetson needs network access the **first** time each model is used; after that the cache serves them offline. Both fit the 8 GB budget alongside the bi-encoder.
+
+> **Air-gap prep: you must pass `--rerank` explicitly.**
+> Since 2026-07-27 the personal/Jetson profile sets `rerank_default: false`, so a
+> plain `make jetson-query` **never loads the cross-encoder** and therefore never
+> downloads it. Omitting `--no-rerank` is no longer enough — that was true only while
+> reranking defaulted on.
+>
+> ```bash
+> make jetson-query Q="warm the reranker cache" ARGS=--rerank
+> ```
+>
+> Do this once while the box still has network, or pre-populate the `hf-cache`
+> volume by hand. Otherwise the first `--rerank` query on an air-gapped Jetson fails
+> at model load.
+
+To skip the cross-encoder entirely, just don't ask for it: the profile default is already off. Use `--rerank` per call when you want it (and see CLAUDE.md roadmap item 5 for why it is off — it measurably loses recall@5 on this corpus).
 
 ## Why not `encode_multi_process`
 

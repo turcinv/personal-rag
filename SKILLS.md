@@ -22,18 +22,30 @@ must happen before `build-index` for brand-new files to actually get indexed —
 `build-index` reports "N extracted without inventory match" for anything missing a
 catalog row, and those files are silently excluded from the index until one exists.
 
-## gcs-dependency-audit
+## egress-audit
 
-Verify no live cloud-storage calls have crept back into the extractor/indexer
-code. Last run 2026-07-13: clean (no `google.cloud`/`gsutil`/`boto3`/
+Verify nothing has crept into the **indexing or retrieval** path that leaves the
+machine. Scope note: this was originally a cloud-*storage* audit; it is now an
+egress audit, because `src/rag/generation/` deliberately calls provider APIs and the
+old greps would have reported "clean" while it did so.
+
+Last cloud-storage run 2026-07-13: clean (no `google.cloud`/`gsutil`/`boto3`/
 `storage.googleapis.com` anywhere in `src/`, `tests/`, `docs/`, `Makefile`,
-`Dockerfile*`; only inert legacy `gcs_path` id-namespace strings). Re-run
-periodically or after any change touching the extractor/catalog code:
+`Dockerfile*`; only inert legacy `gcs_path` id-namespace strings).
 
 ```bash
-grep -rn "google\.cloud\|google-cloud-storage\|gsutil\|storage\.googleapis\|boto3\|from google\|import google" --include="*.py" src/
-grep -rn "gs://" --include="*.py" src/
+# 1. cloud storage — expect zero hits
+grep -rn "google\.cloud\|google-cloud-storage\|gsutil\|storage\.googleapis\|boto3\|from google\|import google" src/ --include="*.py"
+grep -rn "gs://" src/ --include="*.py"
+
+# 2. any outbound HTTP — expect hits ONLY under src/rag/generation/
+grep -rn "httpx\|requests\.\|urllib\|aiohttp\|https://" src/rag/ --include="*.py"
 ```
+
+The second grep is the one that matters now. `src/rag/generation/` is the single
+sanctioned egress point (Anthropic/OpenAI, off by default, key from the env). A hit
+anywhere else in `src/rag/` — especially under `store/`, `extractors/`, `indexing.py`
+or `query.py` — is a finding.
 
 Also spot-check `config.yaml`'s `extractor.books_path`/`resources_path`/
 `pdf_sources` still point at local disk, not a cloud-synced folder (Google Drive,
@@ -45,10 +57,27 @@ Independent assessment of retrieval quality (not code style): is the embedding
 model, chunking strategy, and retrieval design actually good for this corpus, given
 the Jetson's 8 GB memory constraint. Full report + prioritized roadmap:
 `Templates/RAG Quality Review Report.md` in the vault repo. Condensed version lives
-in this repo's `CLAUDE.md` → "Known Limitations & Improvement Roadmap." Re-run this
-review after implementing roadmap items 1-6 there, to confirm the changes actually
-moved the needle (needs the recall@k eval set from roadmap item 3 to be meaningful
-— don't just eyeball a few queries).
+in this repo's `CLAUDE.md` → "Known Limitations & Improvement Roadmap."
+
+**Roadmap state as of 2026-07-28:** items 1, 3, 4, 5, 7 done; item 2 resolved as
+rejected (both stronger embedding models net-regressed on this corpus); **item 6
+(BM25/lexical hybrid) is the only one left**, and it is specced in
+`docs/OPENSEARCHSTORE_IMPLEMENTATION_PLAN.md` rather than being loose work.
+
+So the useful trigger for re-running this review is no longer "after items 1-6" —
+it is **whenever `make eval` moves materially**, or after any change to the embedding
+model, chunking parameters, or the store backend. The eval harness now exists
+(item 3), so measure; don't eyeball a few queries:
+
+```bash
+make eval                      # profile default
+make eval ARGS=--rerank        # compare both modes on the same index
+make eval ARGS=--no-rerank
+```
+
+Snapshots go in `tests/eval/`. Note `tests/eval/baseline.json` is from 2026-07-20
+(205,476 chunks) and predates the current corpus — compare against
+`post_update_norerank.json` (202,132) instead, or refresh the baseline.
 
 ## jetson-deploy
 
@@ -67,10 +96,22 @@ make build-jetson      # first time only, ~1.5 GB PyTorch layer, cached after
 make jetson-index      # build/update the ChromaDB collection
 ```
 
-**Danger:** if the indexer runs with all sources reporting 0 files (misconfigured
-`.env`), its incremental-prune logic treats every existing chunk as "deleted from
-source" and starts removing them from ChromaDB. If you see all-zero source counts
-at startup, Ctrl+C immediately — do not let it reach the prune step. Fix `.env`
-first, verify non-zero counts, then re-run.
+**Guarded, but not fully:** if *every* source reports 0 files while the collection
+already holds chunks, `indexer.main()` raises `RuntimeError` and prunes nothing —
+the error names the config keys and env overrides to check. This is the guard added
+after the 2026-07-15 incident, in which exactly this situation pruned 172,557
+chunks to zero. You do not need to Ctrl+C to beat the prune step.
+
+What the guard does **not** cover:
+
+- A **partially** broken mount. One source empty while others are fine is
+  indistinguishable from a real deletion, and those chunks *will* be pruned. Read the
+  per-source file counts in the startup log.
+- An **already-empty** index. A fresh profile pointed at a bad path won't trip the
+  guard; it will "succeed" and create an empty collection.
+
+If you do need to serve from the Jetson, `make jetson-serve` runs the API container.
+Budget memory for it: the server keeps the embedder resident (plus the cross-encoder
+once anything reranks) while a reindex subprocess runs alongside it in the same 8 GB.
 
 Full details: `docs/jetson.md`.

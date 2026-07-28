@@ -1,5 +1,20 @@
 # RAG Project Fix Summary
 
+> **HISTORICAL — memory-exhaustion fix as of 2026-06-05. ARCHIVED 2026-07-28.**
+> The streaming-pipeline reasoning still holds, but two entries in its
+> *"What Was Not Changed"* list are **now false and load-bearing** — do not reason
+> from them:
+> - **Chunk IDs are a SHA-256 of the FULL chunk text**, not of
+>   `(path, section_index, chunk_index, chunk[:80])`. That change is precisely what
+>   makes incremental indexing possible (`src/rag/chunking.py`).
+> - **The collection is never deleted or recreated.** Indexing upserts and prunes
+>   incrementally, and `src/rag/indexer.py` raises rather than pruning if every source
+>   reports 0 files.
+>
+> `index_obsidian.py` / `query_obsidian.py` are now `src/rag/indexer.py` / `query.py`,
+> and `collection.add()` is an `upsert` through `RetrievalStore`. Current state:
+> [`../architecture.md`](../architecture.md).
+
 **Date:** 2026-06-05  
 **Branch:** main  
 **Issue:** `index_obsidian.py` killed by SIGKILL at ~PDF 168/175 due to RAM exhaustion on Jetson Orin Nano Super (8 GB unified RAM)
