@@ -257,6 +257,55 @@ take the server's model memory with it if it fails. The job registry is
 in-process and is not pruned — one record per reindex persists for the life of the
 server. Endpoint reference: [api.md](api.md).
 
+## What a chunk record contains
+
+`store.upsert(ids, embeddings, docs, metas)` writes four parallel arrays, so every
+chunk in the collection persists four things:
+
+| Part | What it is | Derived from |
+|---|---|---|
+| `id` | SHA-256 of `(path, section_index, chunk_index, chunk)` | the **full chunk text** |
+| `embedding` | 384-dim float vector (`all-MiniLM-L6-v2`) | the **chunk body only** |
+| `document` | the chunk text, stored **verbatim** | — |
+| `metadata` | the 11 fields tabled below | frontmatter, path, PDF/JSON metadata |
+
+Two consequences worth knowing:
+
+**The store holds a full second copy of your text.** `document` is not a pointer —
+retrieval returns the stored text, so nothing needs to re-read the vault or the PDFs
+at query time. That is why `search()` can serve results with the source files
+unmounted, and why the API container needs no source mounts to answer `/query`.
+
+**The vector depends on the body, the metadata does not.** This asymmetry is not an
+optimization detail — it is what makes the metadata-only refresh path *correct*.
+Editing a note's frontmatter or heading changes its metadata but not its chunk body,
+so the ID is unchanged and the existing embedding is still valid; `update_metadata()`
+refreshes the fields without re-embedding. Fold that into `upsert` and every
+frontmatter tweak silently becomes a re-embed.
+
+### On-disk footprint
+
+Measured 2026-07-28 at 202,132 chunks: **2.4 GB** total.
+
+| Component | Size | Notes |
+|---|---|---|
+| `embedding_metadata_string_value` | 645 MB | the metadata values themselves |
+| `embedding_fulltext_search_*` | ~730 MB | Chroma's FTS index over `document` |
+| `embedding_metadata` (+ index) | 349 MB | 11 fields × 202k chunks ≈ 2.2M key-value rows |
+| HNSW segment dir | 428 MB | the actual vector index |
+| `embeddings` (+ index) | 61 MB | id ↔ vector bookkeeping in SQLite |
+
+The distribution is counter-intuitive, so don't estimate from the vectors: raw text
+is only ~66 MB (mean chunk is ~327 chars, well under `chunk_max_chars` because many
+vault notes are short enough to be returned whole), and float32 vectors account for
+~0.3 GB. **Metadata and the full-text index are the two largest costs.**
+
+Note that ~730 MB of the store is an FTS index this project never queries — Chroma
+builds it over every document automatically, and there is no lexical/BM25 retrieval
+path on this backend (see roadmap item 6 in CLAUDE.md, which routes hybrid search to
+the planned OpenSearch backend instead). Reducing the metadata field count is the
+only lever here that would meaningfully shrink the store.
+
 ## Metadata per chunk
 
 | Field | Source | Example |
