@@ -1,0 +1,484 @@
+{
+  "generated_at": "2026-07-30T12:05:08",
+  "model": "sentence-transformers/all-MiniLM-L6-v2",
+  "collection": "obsidian_markdown",
+  "collection_count": 202132,
+  "retrieval_depth": 10,
+  "rerank": false,
+  "hybrid": true,
+  "overall": {
+    "n": 45,
+    "recall@5": 0.9111,
+    "recall@10": 0.9556,
+    "mrr": 0.8197
+  },
+  "by_kind": {
+    "resource": {
+      "n": 15,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 1.0
+    },
+    "vault": {
+      "n": 30,
+      "recall@5": 0.8667,
+      "recall@10": 0.9333,
+      "mrr": 0.7295
+    }
+  },
+  "per_query": [
+    {
+      "query": "how do I troubleshoot a Kubernetes pod stuck in Pending state",
+      "kind": "vault",
+      "expected": [
+        "Kubernetes Pod Pending State Troubleshooting"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "what are ReplicaSets, Deployments and rolling updates in Kubernetes",
+      "kind": "vault",
+      "expected": [
+        "ReplicaSets Deployments and Rolling Updates"
+      ],
+      "hit_rank": 2,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "how to disable a stuck Kubernetes in Docker Desktop",
+      "kind": "vault",
+      "expected": [
+        "SOP Disable Stuck Kubernetes in Docker Desktop"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "dot product versus cosine similarity for semantic search vectors",
+      "kind": "vault",
+      "expected": [
+        "Dot Product vs. Cosine Similarity",
+        "Mathematical Vectors in Semantic Search"
+      ],
+      "hit_rank": 2,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "how to evaluate retrieval quality in a RAG system",
+      "kind": "vault",
+      "expected": [
+        "Retrieval Evaluation Workflow for RAG Systems",
+        "Dataset Sizing Strategy for RAG Evaluation"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "logging strategy for PDF indexing pipeline",
+      "kind": "vault",
+      "expected": [
+        "Logging Strategy for PDF Indexing"
+      ],
+      "hit_rank": 5,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "strategy for scaling RAG corpus import",
+      "kind": "vault",
+      "expected": [
+        "RAG Corpus Import Scaling Strategy"
+      ],
+      "hit_rank": null,
+      "hit@5": false,
+      "hit@10": false
+    },
+    {
+      "query": "how to extract 2FA tokens from Google Authenticator",
+      "kind": "vault",
+      "expected": [
+        "2FA Token Extraction from Google Authenticator"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "set up GPG and YubiKey for SSH on macOS",
+      "kind": "vault",
+      "expected": [
+        "GPG and YubiKey SSH Setup on macOS"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "identify network devices using nmap fingerprinting",
+      "kind": "vault",
+      "expected": [
+        "Identifying Network Devices with Nmap Fingerprinting"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "rules of engagement for infrastructure penetration testing",
+      "kind": "vault",
+      "expected": [
+        "Rules of Engagement for Infrastructure and Application Penetration Testing"
+      ],
+      "hit_rank": 3,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "import a certificate into the YubiKey PIV authentication slot",
+      "kind": "vault",
+      "expected": [
+        "Importing Certificates into YubiKey PIV Authentication Slot"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "KeePassXC SSH agent no agent running error",
+      "kind": "vault",
+      "expected": [
+        "KeePassXC SSH Agent No Agent Running Troubleshooting"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "learning rate decay schedules for training",
+      "kind": "vault",
+      "expected": [
+        "Learning Rate Decay Schedules"
+      ],
+      "hit_rank": 2,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "human level performance as a proxy for Bayes error",
+      "kind": "vault",
+      "expected": [
+        "Human Level Performance as a Proxy for Bayes Error"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "how to configure Django static files",
+      "kind": "vault",
+      "expected": [
+        "Django Static Files Configuration"
+      ],
+      "hit_rank": 7,
+      "hit@5": false,
+      "hit@10": true
+    },
+    {
+      "query": "REST API HTTP method semantics",
+      "kind": "vault",
+      "expected": [
+        "REST API Method Semantics"
+      ],
+      "hit_rank": null,
+      "hit@5": false,
+      "hit@10": false
+    },
+    {
+      "query": "managing sensitive environment variables in version control",
+      "kind": "vault",
+      "expected": [
+        "Managing Sensitive Environment Variables in Version Control"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "static type checking mitigations for Python data science libraries",
+      "kind": "vault",
+      "expected": [
+        "Python Static Type Checking Mitigations for Data Science Libraries"
+      ],
+      "hit_rank": 8,
+      "hit@5": false,
+      "hit@10": true
+    },
+    {
+      "query": "why avoid writing a ZIP file into itself",
+      "kind": "vault",
+      "expected": [
+        "Avoid Writing a ZIP File Into Itself"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "what ports does Pi-hole require",
+      "kind": "vault",
+      "expected": [
+        "Pi-hole Port Requirements"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "configure Tailscale subnet routing on Linux",
+      "kind": "vault",
+      "expected": [
+        "Configuring Tailscale Subnet Routing on Linux"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "persistent IP assignment through DHCP reservation",
+      "kind": "vault",
+      "expected": [
+        "Persistent IP Assignment Through DHCP Reservations"
+      ],
+      "hit_rank": 4,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "OpenVPN Access Server licensing model",
+      "kind": "vault",
+      "expected": [
+        "OpenVPN Access Server Licensing Model"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "which VPN to choose for a home lab",
+      "kind": "vault",
+      "expected": [
+        "VPN Selection for Home Labs"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "K3s edge AI cluster architecture",
+      "kind": "vault",
+      "expected": [
+        "K3s Edge AI Cluster Architecture"
+      ],
+      "hit_rank": 3,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "Tekton EventListener configuration",
+      "kind": "vault",
+      "expected": [
+        "Tekton EventListener Configuration"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "check a USB disk filesystem with grml",
+      "kind": "vault",
+      "expected": [
+        "USB Disk Filesystem Check with grml"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "architectural differences between Cursor and Visual Studio Code",
+      "kind": "vault",
+      "expected": [
+        "Architectural Differences Between Cursor and Visual Studio Code"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "MLOps runtime for bioreactor simulations",
+      "kind": "vault",
+      "expected": [
+        "MLOps Runtime for Bioreactor Simulations"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "hands-on machine learning with scikit-learn keras and tensorflow",
+      "kind": "resource",
+      "expected": [
+        "Hands On Machine Learning"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "battle-tested tips for using Claude Code for agentic coding",
+      "kind": "resource",
+      "expected": [
+        "101 Claude Code Tips"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "patterns for API design and simplifying integration",
+      "kind": "resource",
+      "expected": [
+        "Patterns for API Design"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "continuous API management practices",
+      "kind": "resource",
+      "expected": [
+        "Continuous API Management"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "head first design patterns book",
+      "kind": "resource",
+      "expected": [
+        "Head First Design Patterns"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "learning Helm for packaging Kubernetes applications",
+      "kind": "resource",
+      "expected": [
+        "Learning Helm"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "Kubernetes for beginners course",
+      "kind": "resource",
+      "expected": [
+        "KubernetesForBeginners"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "Python for DevOps automation",
+      "kind": "resource",
+      "expected": [
+        "Python for DevOps"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "full stack Python security",
+      "kind": "resource",
+      "expected": [
+        "Full Stack Python Security"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "migrating from a monolith to microservices",
+      "kind": "resource",
+      "expected": [
+        "Monolith to Microservices"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "learning GitHub Actions for CI/CD",
+      "kind": "resource",
+      "expected": [
+        "Learning GitHub Actions"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "PostgreSQL up and running database book",
+      "kind": "resource",
+      "expected": [
+        "postgresql"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "building APIs with FastAPI",
+      "kind": "resource",
+      "expected": [
+        "fastapi"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "building serverless applications on Knative",
+      "kind": "resource",
+      "expected": [
+        "Building Serverless Applications on Knative"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    },
+    {
+      "query": "learning Dapr for distributed systems",
+      "kind": "resource",
+      "expected": [
+        "Learning Dapr"
+      ],
+      "hit_rank": 1,
+      "hit@5": true,
+      "hit@10": true
+    }
+  ],
+  "label": "post-hybrid 2026-07-30 dense-favored w[0.3,1.0] k50 (roadmap item 6)"
+}

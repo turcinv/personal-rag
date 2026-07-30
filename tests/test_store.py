@@ -190,6 +190,11 @@ def test_chroma_store_upsert_query_matches_direct_chromadb_path():
     assert store_records == raw_records
     assert [r["document"] for r in store_records] == ["doc a", "doc b", "doc c"]
 
+    # Phase 1: text=/hybrid= are accepted for interface parity but IGNORED by
+    # Chroma — passing them must return byte-identical records (and never add an
+    # `id` key), so dense-only behaviour and the eval baseline stay unchanged.
+    assert store.query(query_vec, 3, text="doc a", hybrid=True) == store_records
+
 
 def test_chroma_store_query_honors_where_filter():
     store = _store("parity-where")
@@ -202,6 +207,40 @@ def test_chroma_store_query_honors_where_filter():
     hits = store.query([1.0, 0.0, 0.0, 0.0], 5, where={"domain": {"$eq": "X"}})
     assert {h["document"] for h in hits} == {"doc a", "doc c"}
     assert all(h["metadata"]["domain"] == "X" for h in hits)
+
+
+def test_chroma_store_iter_records_yields_id_document_metadata():
+    """iter_records() is the full-fidelity read (id + document + metadata) the
+    lexical-index builder consumes — snapshot() carries metadata only."""
+    store = _store("parity-iter")
+    ids = ["a", "b", "c"]
+    embeddings = [[1.0, 0, 0, 0], [0, 1.0, 0, 0], [0, 0, 1.0, 0]]
+    docs = ["doc a", "doc b", "doc c"]
+    metas = [{"path": "p1"}, {"path": "p2"}, {"path": "p3"}]
+    store.upsert(ids, embeddings, docs, metas)
+
+    got = {cid: (doc, meta) for cid, doc, meta in store.iter_records()}
+    assert got == {
+        "a": ("doc a", {"path": "p1"}),
+        "b": ("doc b", {"path": "p2"}),
+        "c": ("doc c", {"path": "p3"}),
+    }
+
+
+def test_chroma_store_iter_records_pages_over_all_chunks():
+    """Paging must return every chunk even when the page size is smaller than the
+    collection (the Jetson-memory-safe path), not just the first page."""
+    store = _store("parity-iter-paged")
+    n = 25
+    store.upsert(
+        ids=[f"id{i}" for i in range(n)],
+        embeddings=[[float(i), 1.0, 0, 0] for i in range(n)],
+        docs=[f"doc {i}" for i in range(n)],
+        metas=[{"path": f"p{i}"} for i in range(n)],
+    )
+    seen = list(store.iter_records(page_size=10))   # 3 pages: 10 + 10 + 5
+    assert len(seen) == n
+    assert {cid for cid, _, _ in seen} == {f"id{i}" for i in range(n)}
 
 
 def test_chroma_store_existing_ids_returns_upserted_ids():

@@ -1,5 +1,6 @@
 .venv/
 chroma_db/
+lexical_index/
 logs/
 __pycache__/
 *.pyc

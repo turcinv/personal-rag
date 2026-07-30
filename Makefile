@@ -1,4 +1,4 @@
-.PHONY: help install index query eval pipeline-status sync-to-jetson test test-unit build build-jetson \
+.PHONY: help install index build-lexical query eval pipeline-status sync-to-jetson test test-unit build build-jetson \
         serve docker-serve jetson-serve \
         docker-index docker-query docker-test \
         jetson-pipeline-status jetson-full-pipeline \
@@ -29,6 +29,7 @@ help:
 	@echo ""
 	@echo "RAG (local):"
 	@echo "  make index                reindex vault + PDFs into ChromaDB"
+	@echo "  make build-lexical        build BM25 lexical index for hybrid (after index)"
 	@echo "  make query Q=\"...\"        semantic query"
 	@echo "  make pipeline-status      check all extraction pipeline outputs"
 	@echo "  make eval [ARGS=...]      recall@k / MRR eval over golden_queries.jsonl"
@@ -78,6 +79,12 @@ install:
 
 index:
 	.venv/bin/rag-index
+
+# Build the BM25 lexical index (SQLite FTS5) from the existing ChromaDB collection,
+# for client-side hybrid retrieval (rag-query --hybrid / make eval ARGS=--hybrid).
+# Run after `make index`; rebuilds ./lexical_index/<collection>.db (gitignored).
+build-lexical:
+	.venv/bin/rag-build-lexical
 
 query:
 	.venv/bin/rag-query $(Q)

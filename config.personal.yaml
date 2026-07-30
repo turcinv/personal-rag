@@ -89,6 +89,12 @@ rerank_default: false
 # enough that matches survive the post-filter. Only applies when tags are supplied.
 tag_fetch_k: 200
 
+# BM25 hybrid (experimental, off by default; see config.yaml for the full note).
+# Inert unless --hybrid is passed; hybrid=False stays byte-identical to dense-only.
+hybrid_fetch_k: 50            # candidate-pool depth for BOTH pools when hybrid is on
+hybrid_weights: [0.3, 1.0]    # [w_lexical, w_dense] — dense-favored (see config.yaml note)
+hybrid_rrf_k: 60             # RRF damping constant
+
 # Answer generation (optional layer above search(); see config.yaml for the full
 # reference). DISABLED by default — /query works without it, /answer returns 503
 # until a `generation` block + API key env var are present. On the Jetson the LLM

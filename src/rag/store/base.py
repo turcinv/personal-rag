@@ -26,6 +26,12 @@ class RetrievalStore(Protocol):
     each method wraps.
     """
 
+    #: Whether this backend fuses BM25 + vector natively inside :meth:`query`
+    #: when ``hybrid=True``. Chroma has no lexical channel so it stays False and
+    #: ``query.search()`` does client-side BM25 fusion instead; a future
+    #: OpenSearchStore sets this True and ``search()`` trusts its fused order.
+    supports_hybrid: bool = False
+
     @property
     def name(self) -> str:
         """The underlying collection's name."""
@@ -58,6 +64,19 @@ class RetrievalStore(Protocol):
         """
         ...
 
+    def iter_records(self):
+        """Yield ``(chunk_id, document, metadata)`` for every stored chunk.
+
+        The full-fidelity counterpart to :meth:`snapshot` (which returns
+        metadata only): this also carries the chunk *text*, so an auxiliary
+        lexical index (``rag.lexical.LexicalIndex``) can be built from what is
+        already indexed without re-chunking or re-embedding. Implementations
+        should page internally rather than materialize the whole corpus at once
+        (see ``ChromaStore``), since a large collection would otherwise blow the
+        Jetson's memory budget. Order is unspecified.
+        """
+        ...
+
     def count(self) -> int:
         """Return the number of chunks currently stored."""
         ...
@@ -79,7 +98,8 @@ class RetrievalStore(Protocol):
         """Remove chunks by ID."""
         ...
 
-    def query(self, embedding: list, k: int, where: Optional[dict] = None) -> list:
+    def query(self, embedding: list, k: int, where: Optional[dict] = None,
+              *, text: Optional[str] = None, hybrid: bool = False) -> list:
         """Return the top-``k`` nearest records to ``embedding``, best-first.
 
         Each record is a dict with keys ``document`` (str), ``metadata``
@@ -88,5 +108,14 @@ class RetrievalStore(Protocol):
         pass ``None``/empty for no filter. Rank assignment and any rerank
         step happen ABOVE this call, in ``query.search()`` — a store never
         reranks.
+
+        ``text`` (the raw, non-embedding-prefixed query string) and ``hybrid``
+        are accepted for interface parity across backends but **may be
+        ignored**: a backend with no lexical channel (e.g. Chroma) does pure
+        vector search and disregards both. A backend with native BM25+k-NN
+        fusion (e.g. a future OpenSearchStore) uses ``text`` for the lexical
+        clause when ``hybrid`` is true. When the store ignores ``hybrid``,
+        ``query.search()`` performs client-side fusion instead (see its
+        docstring and the OpenSearch plan, rollout step 2).
         """
         ...

@@ -19,10 +19,14 @@ class FakeStore:
         self.docs = docs
         self.last_k = None
         self.last_where = None
+        self.last_text = None
+        self.last_hybrid = None
 
-    def query(self, embedding, k, where=None):
+    def query(self, embedding, k, where=None, *, text=None, hybrid=False):
         self.last_k = k
         self.last_where = where
+        self.last_text = text
+        self.last_hybrid = hybrid
         docs = self.docs[:k]
         return [
             {"document": d, "metadata": {"title": d, "path": d}, "distance": 0.1 * i}
@@ -57,6 +61,21 @@ def test_dense_only_preserves_order_and_trims(monkeypatch):
     assert [r["rank"] for r in recs] == [1, 2, 3, 4, 5]
 
 
+def test_search_threads_raw_text_and_hybrid_flag_to_store(monkeypatch):
+    """Phase 1: search() forwards the RAW query string as text= (never the
+    embedding-prefixed variant) and the hybrid flag as-is, without changing
+    results (Chroma ignores both)."""
+    store = FakeStore([f"doc{i}" for i in range(5)])
+    # A config with a query_instruction prefix proves text= is the raw query,
+    # not the prefixed embed_input.
+    cfg = {"embedding_model": "x", "query_instruction": "PREFIX: "}
+    recs = q.search("my raw query", n_results=3, config=cfg, model=_fake_model(),
+                    store=store, rerank=False, hybrid=False)
+    assert store.last_text == "my raw query"     # raw, not "PREFIX: my raw query"
+    assert store.last_hybrid is False
+    assert [r["document"] for r in recs] == ["doc0", "doc1", "doc2"]
+
+
 def test_rerank_widens_pool_reorders_and_trims(monkeypatch):
     monkeypatch.setattr(q, "get_reranker", lambda name: FakeReranker())
     docs = [f"doc{i}" for i in range(19)] + ["the match doc"]  # relevant one last
@@ -75,6 +94,67 @@ def test_rerank_fetch_k_at_least_n_results(monkeypatch):
     q.search("q", n_results=30, config={"embedding_model": "x", "rerank_fetch_k": 20},
              model=_fake_model(), store=store, rerank=True)
     assert store.last_k == 30            # max(n_results, rerank_fetch_k)
+
+
+# ── hybrid: BM25 fusion inside search() ──────────────────────────────────────────
+
+
+class FakeLexical:
+    """Stand-in for rag.lexical.LexicalIndex: returns fixed lexical hits and
+    records the (text, k, where) it was asked for."""
+
+    def __init__(self, docs):
+        self.docs = docs                 # list of document strings
+        self.calls = []
+
+    def query(self, text, k, where=None):
+        self.calls.append((text, k, where))
+        return [
+            {"document": d, "metadata": {"title": d, "path": d}, "distance": None}
+            for d in self.docs
+        ]
+
+
+def test_hybrid_fuses_lexical_pool_and_boosts_dense_straggler(monkeypatch):
+    # doc9 is dead last in the dense pool (rank 10) but rank 1 in lexical — RRF
+    # must pull it to the top of the fused, reranked-off result.
+    store = FakeStore([f"doc{i}" for i in range(10)])
+    lex = FakeLexical(["doc9"])
+    monkeypatch.setattr("rag.lexical.get_lexical", lambda *a, **k: lex)
+
+    recs = q.search("k8s pods", n_results=5, config={"embedding_model": "x"},
+                    model=_fake_model(), store=store, rerank=False, hybrid=True)
+
+    assert store.last_hybrid is True                 # flag threaded to the store
+    assert store.last_k == 50                        # widened to hybrid_fetch_k default
+    assert lex.calls and lex.calls[0][0] == "k8s pods"   # raw query passed to lexical
+    assert recs[0]["document"] == "doc9"             # fused to #1 from dense rank 10
+    assert recs[0]["rank"] == 1
+
+
+def test_hybrid_skipped_when_store_supports_native_fusion(monkeypatch):
+    store = FakeStore([f"doc{i}" for i in range(5)])
+    store.supports_hybrid = True         # native-fusion backend
+    monkeypatch.setattr(
+        "rag.lexical.get_lexical",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not fuse client-side")),
+    )
+    recs = q.search("q", n_results=3, config={"embedding_model": "x"},
+                    model=_fake_model(), store=store, rerank=False, hybrid=True)
+    assert [r["document"] for r in recs] == ["doc0", "doc1", "doc2"]   # store order trusted
+    assert store.last_hybrid is True     # store still receives the flag
+
+
+def test_hybrid_false_never_touches_lexical_and_is_byte_identical(monkeypatch):
+    store = FakeStore([f"doc{i}" for i in range(5)])
+    monkeypatch.setattr(
+        "rag.lexical.get_lexical",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("hybrid=False must not fuse")),
+    )
+    recs = q.search("q", n_results=5, config={"embedding_model": "x"},
+                    model=_fake_model(), store=store, rerank=False, hybrid=False)
+    assert [r["document"] for r in recs] == ["doc0", "doc1", "doc2", "doc3", "doc4"]
+    assert store.last_hybrid is False
 
 
 # ── build_where: status (native $eq) ─────────────────────────────────────────────
@@ -105,7 +185,7 @@ class FakeStoreWithTags:
         self.docs_tags = docs_tags       # list of (doc, tags_string)
         self.last_k = None
 
-    def query(self, embedding, k, where=None):
+    def query(self, embedding, k, where=None, *, text=None, hybrid=False):
         self.last_k = k
         picked = self.docs_tags[:k]
         return [
@@ -151,7 +231,7 @@ def test_multiple_tags_are_and():
 def test_tags_missing_metadata_never_raises_and_drops():
     # A record whose metadata has no `tags` key at all must be dropped, not crash.
     class NoTagsStore(FakeStore):
-        def query(self, embedding, k, where=None):
+        def query(self, embedding, k, where=None, *, text=None, hybrid=False):
             self.last_k = k
             docs = self.docs[:k]
             return [

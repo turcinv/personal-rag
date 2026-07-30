@@ -24,6 +24,10 @@ logger = logging.getLogger("rag")
 class ChromaStore:
     """``RetrievalStore`` backed by one persistent ChromaDB collection."""
 
+    #: Chroma has no BM25/lexical channel — ``query.search()`` does client-side
+    #: fusion when hybrid retrieval is requested (see the RetrievalStore docs).
+    supports_hybrid = False
+
     def __init__(self, index_path: str, collection_name: str):
         self._client = chromadb.PersistentClient(
             path=index_path,
@@ -75,6 +79,35 @@ class ChromaStore:
         """Return the set of chunk IDs currently stored."""
         return set(self._coll().get(include=[])["ids"])
 
+    def iter_records(self, page_size: int = 10_000):
+        """Yield ``(chunk_id, document, metadata)`` for every stored chunk.
+
+        Pages through the collection with ``get(limit=, offset=)`` instead of
+        one all-at-once ``get`` — the corpus can be 200k+ chunks and the Jetson
+        has only 8 GB unified RAM, so the whole document set must never be
+        materialized at once. This is the only place the store reads back stored
+        ``documents`` in bulk (kept here so ``chromadb`` stays confined to this
+        module); ``rag.lexical`` consumes it to build the BM25 index.
+        """
+        coll = self._coll()
+        offset = 0
+        while True:
+            page = coll.get(
+                include=["documents", "metadatas"],
+                limit=page_size,
+                offset=offset,
+            )
+            ids = page["ids"]
+            if not ids:
+                break
+            docs = page["documents"]
+            metas = page["metadatas"]
+            for cid, doc, meta in zip(ids, docs, metas):
+                yield cid, doc, meta
+            if len(ids) < page_size:
+                break
+            offset += page_size
+
     def count(self) -> int:
         """Return the number of chunks currently stored."""
         return self._coll().count()
@@ -91,13 +124,19 @@ class ChromaStore:
         """Remove chunks by ID."""
         self._coll().delete(ids=ids)
 
-    def query(self, embedding, k, where=None) -> list:
+    def query(self, embedding, k, where=None, *, text=None, hybrid=False) -> list:
         """Return the top-``k`` nearest records to ``embedding``, best-first.
 
         Mirrors the historical ``collection.query(...)`` call exactly: same
         ``include`` list, ``where`` only passed when truthy, and the ``[0]``-
         unwrap of Chroma's per-query-batch result shape (only one query
         embedding is ever passed here).
+
+        ``text`` and ``hybrid`` are accepted for ``RetrievalStore`` interface
+        parity but **ignored** — Chroma has no lexical/BM25 channel, so this is
+        always pure vector search. They are deliberately never forwarded into
+        ``collection.query(...)``; client-side BM25 fusion (when requested)
+        happens above this call in ``query.search()``.
         """
         query_kwargs = dict(
             query_embeddings=[embedding],
