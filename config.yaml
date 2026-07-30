@@ -77,6 +77,21 @@ rerank_default: false
 # (Chroma 0.6.3 can't query the comma-joined tags string), so the pool must be wide
 # enough that matches survive the post-filter. Only applies when tags are supplied.
 tag_fetch_k: 200
+# ── BM25 hybrid (experimental, off by default) ────────────────────────────────
+# When rag-query --hybrid / make eval ARGS=--hybrid is used, search() fuses a BM25
+# lexical pool (SQLite FTS5, built by `make build-lexical` into ./lexical_index/)
+# with the dense pool via Reciprocal Rank Fusion. Chroma has no native BM25, so
+# this fusion is client-side; a future OpenSearch backend would fuse natively.
+# hybrid=False (the default) is byte-identical to dense-only — these keys are inert
+# until --hybrid is passed. See CLAUDE.md roadmap item 6 for the measured finding.
+hybrid_fetch_k: 50            # candidate-pool depth for BOTH pools when hybrid is on
+# [w_lexical, w_dense]. Dense-favored on purpose: equal weights [1,1] net-LOSE on
+# this corpus (recall@5 0.911→0.867, it over-weights BM25 on short vault titles),
+# whereas [0.3,1.0] is recall-neutral and lifts MRR 0.794→0.820 (all resource
+# queries rank #1). Measured 2026-07-30; see CLAUDE.md roadmap item 6.
+hybrid_weights: [0.3, 1.0]
+hybrid_rrf_k: 60             # RRF damping constant (standard default)
+# lexical_path: ./lexical_index/obsidian_markdown.db   # override; default derives from collection_name
 # ── Answer generation (retrieval ≠ chatbot) ──────────────────────────────────
 # Optional layer ABOVE search(): the /answer endpoint retrieves chunks, then
 # asks an LLM for a grounded, cited answer. Orthogonal to the retrieval store

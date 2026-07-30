@@ -26,6 +26,12 @@ class RetrievalStore(Protocol):
     each method wraps.
     """
 
+    #: Whether this backend fuses BM25 + vector natively inside :meth:`query`
+    #: when ``hybrid=True``. Chroma has no lexical channel so it stays False and
+    #: ``query.search()`` does client-side BM25 fusion instead; a future
+    #: OpenSearchStore sets this True and ``search()`` trusts its fused order.
+    supports_hybrid: bool = False
+
     @property
     def name(self) -> str:
         """The underlying collection's name."""
@@ -55,6 +61,19 @@ class RetrievalStore(Protocol):
         Must reflect the same population as :meth:`count`. Provided for
         ID-only callers; the incremental indexer's 0-files anti-wipe guard
         derives its ID set from :meth:`snapshot` instead.
+        """
+        ...
+
+    def iter_records(self):
+        """Yield ``(chunk_id, document, metadata)`` for every stored chunk.
+
+        The full-fidelity counterpart to :meth:`snapshot` (which returns
+        metadata only): this also carries the chunk *text*, so an auxiliary
+        lexical index (``rag.lexical.LexicalIndex``) can be built from what is
+        already indexed without re-chunking or re-embedding. Implementations
+        should page internally rather than materialize the whole corpus at once
+        (see ``ChromaStore``), since a large collection would otherwise blow the
+        Jetson's memory budget. Order is unspecified.
         """
         ...
 

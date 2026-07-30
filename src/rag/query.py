@@ -119,8 +119,12 @@ def search(
     ``model`` / ``store`` may be passed in to avoid reloading them between
     calls; otherwise they are resolved from ``config`` (loaded if omitted).
     ``rerank`` retrieves a wider dense pool (``rerank_fetch_k``, default 20) and
-    reorders it to the top ``n_results`` with a cross-encoder. ``hybrid`` (BM25
-    fusion) is Phase 3d — accepted but not yet wired.
+    reorders it to the top ``n_results`` with a cross-encoder. ``hybrid`` fuses a
+    BM25 lexical pool with the dense pool via Reciprocal Rank Fusion: for a store
+    with native fusion (``supports_hybrid``) the store does it; for Chroma it is
+    done client-side here against ``rag.lexical`` (which needs ``make build-lexical``
+    first). ``hybrid`` composes with ``rerank`` (fuse, then rerank the fused pool)
+    and is off by default — ``hybrid=False`` is byte-identical to dense-only.
 
     ``tags`` is a list of tag names applied as a post-filter (exact, case-
     insensitive membership; multiple tags = AND) — Chroma can't filter the
@@ -144,7 +148,7 @@ def search(
     query_embedding = model.encode([embed_input], normalize_embeddings=True).tolist()[0]
 
     # When reranking, retrieve a wider dense candidate pool (default 20) and let
-    # the cross-encoder pick the final n_results from it. (hybrid is Phase 3d.)
+    # the cross-encoder pick the final n_results from it.
     rerank_fetch_k = int(config.get("rerank_fetch_k", 20))
     fetch_k = max(n_results, rerank_fetch_k) if rerank else n_results
     # Tags are post-filtered (not a native where clause), so widen the dense pool
@@ -152,11 +156,28 @@ def search(
     # tag may still under-return within this pool.
     if tags:
         fetch_k = max(fetch_k, int(config.get("tag_fetch_k", 200)))
+    # Hybrid widens BOTH the dense and lexical pools independent of n_results, so
+    # RRF has depth to rescue a dense miss with a lexical hit (and vice-versa).
+    if hybrid:
+        fetch_k = max(fetch_k, int(config.get("hybrid_fetch_k", 50)))
 
     # Thread the raw query text + hybrid flag down to the store. Chroma ignores
     # both (pure vector search); a backend with native BM25+k-NN fusion uses
     # them. `text` is the raw query — never `embed_input` (the prefixed variant).
     hits = store.query(query_embedding, fetch_k, filters, text=query, hybrid=hybrid)
+
+    # Client-side BM25 fusion: only when hybrid is requested AND the store has no
+    # native lexical channel (Chroma). A native-fusion store (supports_hybrid)
+    # already returned fused order — trust it. hybrid=False never enters here, so
+    # the dense-only path stays byte-identical.
+    if hybrid and not getattr(store, "supports_hybrid", False):
+        from .lexical import get_lexical, rrf_fuse  # lazy: only on the hybrid path
+        lex_hits = get_lexical(config, collection_name).query(query, fetch_k, where=filters)
+        hits = rrf_fuse(
+            hits, lex_hits,
+            weights=config.get("hybrid_weights", (1.0, 1.0)),
+            k_rrf=int(config.get("hybrid_rrf_k", 60)),
+        )
 
     records = [
         {"document": hit["document"], "metadata": hit["metadata"], "distance": hit["distance"], "rank": i}
@@ -241,6 +262,9 @@ def main():
                     help="Force cross-encoder reranking on (overrides rerank_default)")
     rr.add_argument("--no-rerank", dest="rerank", action="store_false",
                     help="Disable cross-encoder reranking (dense retrieval only)")
+    parser.add_argument("--hybrid", dest="hybrid", action="store_true", default=False,
+                        help="Fuse BM25 lexical retrieval with dense via RRF "
+                             "(needs `make build-lexical` first)")
     args = parser.parse_args()
 
     query = " ".join(args.query)
@@ -253,7 +277,7 @@ def main():
     where = build_where(args.domain, args.type_, args.source, args.confidence, args.subdomain,
                         status=args.status)
     records = search(query, args.n_results, filters=where, tags=args.tag, config=config,
-                     rerank=rerank)
+                     rerank=rerank, hybrid=args.hybrid)
 
     if args.output_json:
         output = [
@@ -283,7 +307,8 @@ def main():
         print(f"Path: {meta.get('path')}")
         _sub = meta.get('subdomain')
         print(f"Type: {meta.get('type')} | Domain: {meta.get('domain')}" + (f" / {_sub}" if _sub else "") + f" | Status: {meta.get('status')} | Confidence: {meta.get('confidence')}")
-        print(f"Distance: {distance:.4f}")
+        # distance is None for a lexical-only hybrid hit (no cosine distance).
+        print("Distance: " + (f"{distance:.4f}" if distance is not None else "n/a"))
         print("-" * 80)
         print(doc[:1200].strip())
         print()

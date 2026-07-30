@@ -38,6 +38,11 @@ make install          # creates .venv and installs package + deps
 .venv/bin/rag-query "your question" -n 12    # optional: number of results (default 8)
 .venv/bin/rag-query "Kubernetes" --domain DevOps
 
+# Optional BM25+dense hybrid (experimental, off by default — see roadmap item 6).
+# Build the lexical index once (from the existing collection; no re-embed), then --hybrid:
+.venv/bin/rag-build-lexical                  # or: make build-lexical
+.venv/bin/rag-query "your question" --hybrid
+
 # HTTP backend (query + indexing over HTTP; JWT-authenticated). Full guide: docs/api.md
 export RAG_API_JWT_SECRET="$(openssl rand -hex 32)"   # required; ≥32 bytes
 make serve                                            # or: .venv/bin/rag-serve  (0.0.0.0:8000)
@@ -55,7 +60,7 @@ make dup-detect       # near-duplicate detection report
 make link-mocs        # inject resource backlinks into Topic MOCs
 make search Q="..."   # CLI FTS search over resources.db
 
-# Run offline unit tests (pytest, ~171 tests, no network/model/index needed).
+# Run offline unit tests (pytest, ~195 tests, no network/model/index needed).
 # `make install` uses --no-deps so it does NOT install pytest — add it once:
 #   uv pip install pytest
 make test-unit                      # or: .venv/bin/python -m pytest tests/
@@ -93,10 +98,11 @@ personal-rag/
 │   │   ├── indexing.py       # incremental engine: embed/upsert, per-file diff, run_source
 │   │   ├── indexer.py        # main() orchestration (MD + PDF + JSON → store); 0-files guard; entry: rag-index
 │   │   ├── query.py          # search()/build_where/rerank_default seam + query CLI; entry: rag-query
+│   │   ├── lexical.py        # BM25 FTS5 lexical index + RRF fusion (hybrid=True path); entry: rag-build-lexical
 │   │   ├── eval.py           # recall@5/@10 + MRR over tests/eval/golden_queries.jsonl (make eval)
 │   │   ├── pipeline_status.py # extractor pipeline pre-flight check; entry: rag-pipeline-status
 │   │   ├── store/            # pluggable backend seam (ADR Axis 2) — ONLY place chromadb is imported
-│   │   │   ├── base.py        #   RetrievalStore Protocol (9 members incl. snapshot/update_metadata)
+│   │   │   ├── base.py        #   RetrievalStore Protocol (10 members incl. snapshot/update_metadata/iter_records + supports_hybrid)
 │   │   │   ├── chroma_store.py #  ChromaStore — the one implementation
 │   │   │   └── __init__.py    #   get_store(config, collection_name); rejects any store but "chroma"
 │   │   ├── generation/       # answer-synthesis layer ABOVE search() (retrieval ≠ chatbot); orthogonal to store
@@ -132,7 +138,8 @@ personal-rag/
 │   ├── test_extractor.py     # unit: extractor package (detect_type, merge, shingles, etc.)
 │   ├── test_indexing.py      # unit: incremental engine + idempotency (fake model + temp chroma)
 │   ├── test_store.py         # unit: ChromaStore parity, config profiles, chromadb-confinement guard
-│   ├── test_query_search.py  # unit: search() seam — dense pool, rerank reorder/trim, fetch width
+│   ├── test_query_search.py  # unit: search() seam — dense pool, rerank reorder/trim, fetch width, hybrid fusion
+│   ├── test_lexical.py       # unit: BM25 FTS5 index + RRF fusion (temp sqlite, no chromadb/model)
 │   ├── test_generation.py    # unit: generation layer (httpx.MockTransport, no network)
 │   ├── test_eval.py          # unit: eval matching/aggregation + golden-set well-formedness
 │   ├── test_api.py           # unit: FastAPI backend via TestClient + fake state (dependency_overrides)
@@ -365,12 +372,62 @@ Summary, ranked by impact/effort — do these in order, and build the eval set (
    default is a live behaviour change for `rag-query` and the `/query` + `/answer` endpoints,
    so it is left as an open decision — note the eval only scores retrieval, not `/answer`
    synthesis quality, which rerank may still help.
-6. **BM25/lexical hybrid path** — highest raw impact, highest effort (1-2 days,
-   possibly a store change). Do last, after the eval set exists. **On the
-   OpenSearch backend this is free** — it's the native `hybrid=True` path, not
-   extra work. See `docs/OPENSEARCHSTORE_IMPLEMENTATION_PLAN.md` (Axis 3), which
-   subsumes this item for that backend. Chroma has no BM25 and doesn't need it
-   (MiniLM dense + rerank already scores well on the personal corpus).
+6. **[DONE — tested on Chroma; net recall-neutral, off by default]** BM25/lexical
+   hybrid path. **On the OpenSearch backend this is free** — the native
+   `hybrid=True` path (see `docs/OPENSEARCHSTORE_IMPLEMENTATION_PLAN.md`, Axis 3).
+   That doc *asserted* Chroma "doesn't need it"; this item **tested that hypothesis**
+   instead of assuming it. Built a client-side BM25 index and measured.
+
+   **Implementation (2026-07-30):** `search()` now has a real `hybrid=True` path
+   (`src/rag/query.py`) — it fuses a dense pool with a BM25 pool via Reciprocal
+   Rank Fusion (RRF, keyed by document text, deterministic tiebreak). The BM25 pool
+   comes from a SQLite **FTS5** lexical index (`src/rag/lexical.py`, `porter
+   unicode61`, stdlib — no new dep, works on Jetson), built by `rag-build-lexical`
+   / **`make build-lexical`** from the *existing* collection via the store's new
+   paged `iter_records()` — no re-embed, no re-chunk (14 s for 202,132 chunks →
+   `./lexical_index/obsidian_markdown.db`, gitignored). Chroma sets
+   `supports_hybrid = False`, so fusion is client-side, ABOVE the store; a future
+   OpenSearchStore would fuse natively and `search()` would defer to it. Config:
+   `hybrid_fetch_k` (50, pool depth both sides), `hybrid_weights` ([w_lexical,
+   w_dense]), `hybrid_rrf_k` (60). Per call: `rag-query --hybrid`,
+   `make eval ARGS="--hybrid"`. **Off by default** — `hybrid=False` is byte-identical
+   to dense-only (proven: eval unchanged from `post_update_norerank.json`).
+
+   **Measured 2026-07-30 on the 45-query golden set (202,132 chunks), `--no-rerank`:**
+
+   | | dense (baseline) | hybrid `[1,1]` | hybrid `[0.3,1.0]` | hybrid+rerank `[1,1]` |
+   |---|---|---|---|---|
+   | overall recall@5 | **0.911** | 0.867 | **0.911** | 0.800 |
+   | overall recall@10 | **0.956** | 0.911 | **0.956** | 0.889 |
+   | overall MRR | 0.794 | 0.771 | **0.820** | 0.724 |
+   | vault recall@5 | **0.900** | 0.800 | 0.867 | 0.700 |
+   | resource recall@5 | 0.933 | **1.000** | **1.000** | **1.000** |
+   | resource MRR | 0.910 | 1.000 | **1.000** | 0.933 |
+
+   **Finding: the plan doc's "Chroma doesn't need hybrid" holds for *recall*, but
+   is too strong.** Equal weights `[1,1]` over-weight BM25 on short vault-title
+   queries and **net-lose** (recall@5 0.911→0.867), same failure shape as the rerank
+   experiment (item 5). But **dense-favored `[0.3,1.0]` is recall-neutral**
+   (recall@5/@10 identical to dense) **and lifts MRR 0.794→0.820** — the gain is
+   entirely in resources (all 15 resource queries rank their target #1; resource MRR
+   0.910→1.000). Per-query, `[0.3,1.0]` moved 11 queries; the only k=5 crossings are
+   one vault rank-1 hit dropping to 8 (−1 vault) offset by a resource straggler
+   7→1 (+1 resource), netting zero at recall@5. Stacking rerank on top makes it
+   worse (0.800). The one vault recall@5 loss is structural — it persists at every
+   weight tried ([0.2,1.0], [0.3,1.0]) — so it can't be tuned away without giving
+   back the resource win.
+
+   **Decision: `hybrid` stays defaulting to `False`.** There is no recall gain to
+   justify the extra build artifact + query cost by default; the improvement is
+   ranking-only (MRR) and concentrated in resource queries. But it's a legitimate
+   **opt-in** for resource-heavy query loads (perfect resource ranking at recall
+   parity), and the shipped `hybrid_weights` default is `[0.3,1.0]` so anyone
+   flipping `--hybrid` on gets the good operating point, not the naive equal-weight
+   loss. Snapshot: `tests/eval/post_update_hybrid.json` (the `[0.3,1.0]` run).
+   **Caveat: n=45 is underpowered** (±2.2%/query; the verdict rests on ~2–4 flips)
+   and the set is 100% English + unfiltered, so this did **not** measure the
+   Czech-keyword or filtered scenarios where lexical fusion most plausibly helps —
+   the strongest case for hybrid on this corpus is still unmeasured.
 7. **[DONE]** ~~Expose `--tag`/`--status` filters in `query.py`.~~ `status` is a
    native Chroma `$eq` clause in `build_where()`; `tags` (comma-joined string, weak
    Chroma array support) is a case-insensitive AND post-filter behind a widened

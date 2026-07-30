@@ -32,6 +32,7 @@ dev = ["pytest>=8"]
 [project.scripts]
 rag-index = "rag.indexer:main"
 rag-query = "rag.query:main"
+rag-build-lexical = "rag.lexical:main"
 rag-pipeline-status = "rag.pipeline_status:main"
 rag-extract = "extractor.extract_text:main"
 rag-analyze = "extractor.analyze_files:main"

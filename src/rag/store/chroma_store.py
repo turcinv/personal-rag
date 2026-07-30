@@ -24,6 +24,10 @@ logger = logging.getLogger("rag")
 class ChromaStore:
     """``RetrievalStore`` backed by one persistent ChromaDB collection."""
 
+    #: Chroma has no BM25/lexical channel — ``query.search()`` does client-side
+    #: fusion when hybrid retrieval is requested (see the RetrievalStore docs).
+    supports_hybrid = False
+
     def __init__(self, index_path: str, collection_name: str):
         self._client = chromadb.PersistentClient(
             path=index_path,
@@ -74,6 +78,35 @@ class ChromaStore:
     def existing_ids(self) -> set:
         """Return the set of chunk IDs currently stored."""
         return set(self._coll().get(include=[])["ids"])
+
+    def iter_records(self, page_size: int = 10_000):
+        """Yield ``(chunk_id, document, metadata)`` for every stored chunk.
+
+        Pages through the collection with ``get(limit=, offset=)`` instead of
+        one all-at-once ``get`` — the corpus can be 200k+ chunks and the Jetson
+        has only 8 GB unified RAM, so the whole document set must never be
+        materialized at once. This is the only place the store reads back stored
+        ``documents`` in bulk (kept here so ``chromadb`` stays confined to this
+        module); ``rag.lexical`` consumes it to build the BM25 index.
+        """
+        coll = self._coll()
+        offset = 0
+        while True:
+            page = coll.get(
+                include=["documents", "metadatas"],
+                limit=page_size,
+                offset=offset,
+            )
+            ids = page["ids"]
+            if not ids:
+                break
+            docs = page["documents"]
+            metas = page["metadatas"]
+            for cid, doc, meta in zip(ids, docs, metas):
+                yield cid, doc, meta
+            if len(ids) < page_size:
+                break
+            offset += page_size
 
     def count(self) -> int:
         """Return the number of chunks currently stored."""

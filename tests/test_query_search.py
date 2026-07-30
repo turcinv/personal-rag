@@ -96,6 +96,67 @@ def test_rerank_fetch_k_at_least_n_results(monkeypatch):
     assert store.last_k == 30            # max(n_results, rerank_fetch_k)
 
 
+# ── hybrid: BM25 fusion inside search() ──────────────────────────────────────────
+
+
+class FakeLexical:
+    """Stand-in for rag.lexical.LexicalIndex: returns fixed lexical hits and
+    records the (text, k, where) it was asked for."""
+
+    def __init__(self, docs):
+        self.docs = docs                 # list of document strings
+        self.calls = []
+
+    def query(self, text, k, where=None):
+        self.calls.append((text, k, where))
+        return [
+            {"document": d, "metadata": {"title": d, "path": d}, "distance": None}
+            for d in self.docs
+        ]
+
+
+def test_hybrid_fuses_lexical_pool_and_boosts_dense_straggler(monkeypatch):
+    # doc9 is dead last in the dense pool (rank 10) but rank 1 in lexical — RRF
+    # must pull it to the top of the fused, reranked-off result.
+    store = FakeStore([f"doc{i}" for i in range(10)])
+    lex = FakeLexical(["doc9"])
+    monkeypatch.setattr("rag.lexical.get_lexical", lambda *a, **k: lex)
+
+    recs = q.search("k8s pods", n_results=5, config={"embedding_model": "x"},
+                    model=_fake_model(), store=store, rerank=False, hybrid=True)
+
+    assert store.last_hybrid is True                 # flag threaded to the store
+    assert store.last_k == 50                        # widened to hybrid_fetch_k default
+    assert lex.calls and lex.calls[0][0] == "k8s pods"   # raw query passed to lexical
+    assert recs[0]["document"] == "doc9"             # fused to #1 from dense rank 10
+    assert recs[0]["rank"] == 1
+
+
+def test_hybrid_skipped_when_store_supports_native_fusion(monkeypatch):
+    store = FakeStore([f"doc{i}" for i in range(5)])
+    store.supports_hybrid = True         # native-fusion backend
+    monkeypatch.setattr(
+        "rag.lexical.get_lexical",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not fuse client-side")),
+    )
+    recs = q.search("q", n_results=3, config={"embedding_model": "x"},
+                    model=_fake_model(), store=store, rerank=False, hybrid=True)
+    assert [r["document"] for r in recs] == ["doc0", "doc1", "doc2"]   # store order trusted
+    assert store.last_hybrid is True     # store still receives the flag
+
+
+def test_hybrid_false_never_touches_lexical_and_is_byte_identical(monkeypatch):
+    store = FakeStore([f"doc{i}" for i in range(5)])
+    monkeypatch.setattr(
+        "rag.lexical.get_lexical",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("hybrid=False must not fuse")),
+    )
+    recs = q.search("q", n_results=5, config={"embedding_model": "x"},
+                    model=_fake_model(), store=store, rerank=False, hybrid=False)
+    assert [r["document"] for r in recs] == ["doc0", "doc1", "doc2", "doc3", "doc4"]
+    assert store.last_hybrid is False
+
+
 # ── build_where: status (native $eq) ─────────────────────────────────────────────
 
 
