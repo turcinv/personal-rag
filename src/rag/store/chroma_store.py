@@ -91,13 +91,19 @@ class ChromaStore:
         """Remove chunks by ID."""
         self._coll().delete(ids=ids)
 
-    def query(self, embedding, k, where=None) -> list:
+    def query(self, embedding, k, where=None, *, text=None, hybrid=False) -> list:
         """Return the top-``k`` nearest records to ``embedding``, best-first.
 
         Mirrors the historical ``collection.query(...)`` call exactly: same
         ``include`` list, ``where`` only passed when truthy, and the ``[0]``-
         unwrap of Chroma's per-query-batch result shape (only one query
         embedding is ever passed here).
+
+        ``text`` and ``hybrid`` are accepted for ``RetrievalStore`` interface
+        parity but **ignored** — Chroma has no lexical/BM25 channel, so this is
+        always pure vector search. They are deliberately never forwarded into
+        ``collection.query(...)``; client-side BM25 fusion (when requested)
+        happens above this call in ``query.search()``.
         """
         query_kwargs = dict(
             query_embeddings=[embedding],

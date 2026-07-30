@@ -79,7 +79,8 @@ class RetrievalStore(Protocol):
         """Remove chunks by ID."""
         ...
 
-    def query(self, embedding: list, k: int, where: Optional[dict] = None) -> list:
+    def query(self, embedding: list, k: int, where: Optional[dict] = None,
+              *, text: Optional[str] = None, hybrid: bool = False) -> list:
         """Return the top-``k`` nearest records to ``embedding``, best-first.
 
         Each record is a dict with keys ``document`` (str), ``metadata``
@@ -88,5 +89,14 @@ class RetrievalStore(Protocol):
         pass ``None``/empty for no filter. Rank assignment and any rerank
         step happen ABOVE this call, in ``query.search()`` — a store never
         reranks.
+
+        ``text`` (the raw, non-embedding-prefixed query string) and ``hybrid``
+        are accepted for interface parity across backends but **may be
+        ignored**: a backend with no lexical channel (e.g. Chroma) does pure
+        vector search and disregards both. A backend with native BM25+k-NN
+        fusion (e.g. a future OpenSearchStore) uses ``text`` for the lexical
+        clause when ``hybrid`` is true. When the store ignores ``hybrid``,
+        ``query.search()`` performs client-side fusion instead (see its
+        docstring and the OpenSearch plan, rollout step 2).
         """
         ...

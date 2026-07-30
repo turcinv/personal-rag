@@ -19,10 +19,14 @@ class FakeStore:
         self.docs = docs
         self.last_k = None
         self.last_where = None
+        self.last_text = None
+        self.last_hybrid = None
 
-    def query(self, embedding, k, where=None):
+    def query(self, embedding, k, where=None, *, text=None, hybrid=False):
         self.last_k = k
         self.last_where = where
+        self.last_text = text
+        self.last_hybrid = hybrid
         docs = self.docs[:k]
         return [
             {"document": d, "metadata": {"title": d, "path": d}, "distance": 0.1 * i}
@@ -55,6 +59,21 @@ def test_dense_only_preserves_order_and_trims(monkeypatch):
     assert store.last_k == 5             # no widening when rerank off
     assert all("rerank_score" not in r for r in recs)
     assert [r["rank"] for r in recs] == [1, 2, 3, 4, 5]
+
+
+def test_search_threads_raw_text_and_hybrid_flag_to_store(monkeypatch):
+    """Phase 1: search() forwards the RAW query string as text= (never the
+    embedding-prefixed variant) and the hybrid flag as-is, without changing
+    results (Chroma ignores both)."""
+    store = FakeStore([f"doc{i}" for i in range(5)])
+    # A config with a query_instruction prefix proves text= is the raw query,
+    # not the prefixed embed_input.
+    cfg = {"embedding_model": "x", "query_instruction": "PREFIX: "}
+    recs = q.search("my raw query", n_results=3, config=cfg, model=_fake_model(),
+                    store=store, rerank=False, hybrid=False)
+    assert store.last_text == "my raw query"     # raw, not "PREFIX: my raw query"
+    assert store.last_hybrid is False
+    assert [r["document"] for r in recs] == ["doc0", "doc1", "doc2"]
 
 
 def test_rerank_widens_pool_reorders_and_trims(monkeypatch):
@@ -105,7 +124,7 @@ class FakeStoreWithTags:
         self.docs_tags = docs_tags       # list of (doc, tags_string)
         self.last_k = None
 
-    def query(self, embedding, k, where=None):
+    def query(self, embedding, k, where=None, *, text=None, hybrid=False):
         self.last_k = k
         picked = self.docs_tags[:k]
         return [
@@ -151,7 +170,7 @@ def test_multiple_tags_are_and():
 def test_tags_missing_metadata_never_raises_and_drops():
     # A record whose metadata has no `tags` key at all must be dropped, not crash.
     class NoTagsStore(FakeStore):
-        def query(self, embedding, k, where=None):
+        def query(self, embedding, k, where=None, *, text=None, hybrid=False):
             self.last_k = k
             docs = self.docs[:k]
             return [

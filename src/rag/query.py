@@ -153,7 +153,10 @@ def search(
     if tags:
         fetch_k = max(fetch_k, int(config.get("tag_fetch_k", 200)))
 
-    hits = store.query(query_embedding, fetch_k, filters)
+    # Thread the raw query text + hybrid flag down to the store. Chroma ignores
+    # both (pure vector search); a backend with native BM25+k-NN fusion uses
+    # them. `text` is the raw query — never `embed_input` (the prefixed variant).
+    hits = store.query(query_embedding, fetch_k, filters, text=query, hybrid=hybrid)
 
     records = [
         {"document": hit["document"], "metadata": hit["metadata"], "distance": hit["distance"], "rank": i}

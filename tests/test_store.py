@@ -190,6 +190,11 @@ def test_chroma_store_upsert_query_matches_direct_chromadb_path():
     assert store_records == raw_records
     assert [r["document"] for r in store_records] == ["doc a", "doc b", "doc c"]
 
+    # Phase 1: text=/hybrid= are accepted for interface parity but IGNORED by
+    # Chroma — passing them must return byte-identical records (and never add an
+    # `id` key), so dense-only behaviour and the eval baseline stay unchanged.
+    assert store.query(query_vec, 3, text="doc a", hybrid=True) == store_records
+
 
 def test_chroma_store_query_honors_where_filter():
     store = _store("parity-where")
