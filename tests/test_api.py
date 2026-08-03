@@ -709,6 +709,92 @@ def test_index_failed_error_is_single_trimmed_line(client, jwt_secret, indexer):
     assert len(err) <= 300                            # (iv) capped
 
 
+# ── jobs.py registry is bounded (no unbounded growth per reindex) ───────────────
+
+
+@pytest.fixture
+def clean_job_registry():
+    """Reset the process-global manager registry around a test that seeds it
+    directly. Unlike the `indexer` fixture this spawns nothing and joins nothing —
+    seeded `_threads` entries are plain sentinels — it just clears before/after."""
+    _reset_manager()
+    try:
+        yield jobs.manager
+    finally:
+        _reset_manager()
+
+
+def _seed_finished(job_id: str, order: int, status: str = "succeeded") -> None:
+    """Insert a synthetic terminal-status job record + a thread-ref sentinel.
+    `order` builds a monotonic ISO-ish `finished` string (prune sorts by it)."""
+    ts = f"2026-08-03T00:00:00.{order:06d}+00:00"
+    jobs.manager._jobs[job_id] = {
+        "status": status,
+        "started": ts,
+        "finished": ts,
+        "returncode": 0 if status == "succeeded" else 1,
+        "log_path": f"/tmp/index-{job_id}.log",
+        "error": None,
+    }
+    jobs.manager._threads[job_id] = object()  # sentinel thread ref
+
+
+def test_job_registry_prunes_oldest_finished_jobs(clean_job_registry):
+    """_prune_locked caps retained finished jobs and evicts the oldest from BOTH
+    _jobs and _threads (closing the record + thread-ref leak)."""
+    cap = jobs._MAX_FINISHED_JOBS
+    total = cap + 10
+    for i in range(total):
+        _seed_finished(f"job{i:04d}", order=i)
+
+    with jobs.manager._lock:
+        jobs.manager._prune_locked()
+
+    assert len(jobs.manager._jobs) == cap
+    assert len(jobs.manager._threads) == cap          # threads pruned in lockstep
+    survivors = set(jobs.manager._jobs)
+    assert survivors == {f"job{i:04d}" for i in range(10, total)}  # newest cap kept
+    assert set(jobs.manager._threads) == survivors     # no orphaned thread refs
+
+
+def test_job_registry_prune_never_evicts_active(clean_job_registry):
+    """An active (running) job is never pruned, even when it is the oldest and the
+    finished set is over the cap."""
+    cap = jobs._MAX_FINISHED_JOBS
+    jobs.manager._jobs["running-oldest"] = {
+        "status": "running",
+        "started": "2026-08-03T00:00:00.000000+00:00",  # older than every finished job
+        "finished": None,
+        "returncode": None,
+        "log_path": "/tmp/index-running.log",
+        "error": None,
+    }
+    jobs.manager._threads["running-oldest"] = object()
+    for i in range(cap + 5):
+        _seed_finished(f"job{i:04d}", order=i + 1)
+
+    with jobs.manager._lock:
+        jobs.manager._prune_locked()
+
+    assert "running-oldest" in jobs.manager._jobs      # active survives
+    assert "running-oldest" in jobs.manager._threads
+    finished = [j for j, r in jobs.manager._jobs.items() if r["status"] != "running"]
+    assert len(finished) == cap                        # finished capped, active extra
+
+
+def test_job_registry_no_prune_below_cap(clean_job_registry):
+    """At or below the cap nothing is evicted."""
+    cap = jobs._MAX_FINISHED_JOBS
+    for i in range(cap):
+        _seed_finished(f"job{i:04d}", order=i)
+
+    with jobs.manager._lock:
+        jobs.manager._prune_locked()
+
+    assert len(jobs.manager._jobs) == cap
+    assert len(jobs.manager._threads) == cap
+
+
 # ── POST /answer (retrieval-augmented generation) ───────────────────────────────
 #
 # The route reuses the REAL build_where + the patched rag.query.search (via the

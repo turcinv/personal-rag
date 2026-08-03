@@ -453,24 +453,12 @@ Summary, ranked by impact/effort — do these in order, and build the eval set (
 
 Found during a full repo review, deliberately not fixed:
 
-- **`src/rag/api/jobs.py`** — the reindex job registry is never pruned; one record +
-  thread ref per reindex lives for the server process's lifetime. The only `TODO` in
-  `src/`. Harmless in practice (reindexes are rare).
-- **Two dead config keys** are set in all three profiles but read nowhere:
-  `embedding_workers` (the streaming indexer supersedes it) and `include_extensions`
-  (markdown discovery is a hardcoded `rglob("*.md")`).
-- **There is no `rag-eval` console script**, unlike the other 16 `rag-*` entry points.
-  The eval harness runs via `make eval` (→ `scripts/eval_recall.py`) or
-  `python -m rag.eval`. Stale references to `rag-eval` as a command were corrected on
-  2026-07-28; adding the entry point would be the tidier fix.
 - **`make install` cannot run `make test-unit`** — `pytest` is only in the `dev` extra,
   which `--no-deps` skips. `uv pip install pytest` separately.
 - **CI covers Python 3.10 only**, not the 3.12 used for macOS development, and has no
   lint or type-check step. `ci.yml`'s comment claims a `<3.11` pin that doesn't exist.
 - **Config profiles don't work in Docker** — both images copy only `config.yaml` and
   neither Compose file passes `RAG_CONFIG_PATH`. Axis 1 is host-venv-only.
-- **`tests/eval/baseline.json` is stale** (205,476 chunks, 2026-07-20). Compare against
-  `post_update_norerank.json` (202,132) or refresh it.
 - **`config.logmanager.yaml`'s `vault_path` doesn't exist yet** (declared placeholder).
   Indexing that profile creates an empty `wiki_lm` collection without erroring — the
   anti-wipe guard can't fire on an already-empty index.

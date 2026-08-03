@@ -31,9 +31,6 @@ store: chroma
 # bge_small.json / gte_small.json vs baseline.json. MiniLM kept.
 collection_name: "obsidian_markdown"
 
-include_extensions:
-  - ".md"
-
 exclude_dirs:
   - ".obsidian"
   # Claude Code worktrees (.claude/worktrees/*) are near-full vault copies that
@@ -109,7 +106,6 @@ hybrid_rrf_k: 60             # RRF damping constant
 embedding_batch_size: 16   # chunks per embed call — keep small on Jetson (8 GB unified RAM)
 markdown_workers: 1        # threads for parallel MD extraction (I/O bound); 1 = sequential
 pdf_workers: 1             # threads for parallel PDF extraction; keep at 1 on Jetson
-embedding_workers: 1       # CPU fallback workers (ignored when CUDA is available)
 
 pdf_sources:
   - path: '/Users/turcinv/Documents/personal_knowledge/Books/'

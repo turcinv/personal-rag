@@ -1,14 +1,14 @@
 #!/usr/bin/env python
 """Drop one or more ChromaDB collections by name.
 
-This is raw ChromaDB collection-management tooling (list_collections /
-delete_collection) with no equivalent in the ``rag.store.RetrievalStore``
-abstraction (which manages exactly one already-named collection's chunks, not
-the backend's collection catalog) — so unlike the retrieval/indexing engine,
-this admin script talks to chromadb directly. It still points at the
-configured index_path (RAG_INDEX_PATH in Docker), matching the engine's
-connection settings exactly. Lists collections and skips names that don't
-exist — safe to re-run.
+Backend collection-management tooling (list / drop whole collections). A
+``rag.store.RetrievalStore`` is bound to exactly one already-named collection's
+chunks, so these catalog operations go through the store package's
+:func:`~rag.store.list_collection_names` / :func:`~rag.store.drop_collection`
+helpers instead — keeping ``chromadb`` confined to the store package like the
+rest of the engine. Points at the configured index_path (RAG_INDEX_PATH in
+Docker), matching the engine's connection settings exactly. Lists collections
+and skips names that don't exist — safe to re-run.
 
 Usage:
     .venv/bin/python scripts/drop_collections.py obsidian_markdown_bge_small obsidian_markdown_gte_small
@@ -21,16 +21,7 @@ import argparse
 import sys
 
 from rag.utils import load_config  # sets telemetry env var and patches posthog before chromadb loads
-
-import chromadb
-
-
-def _get_client(config):
-    index_path = config.get("index_path", "./chroma_db")
-    return chromadb.PersistentClient(
-        path=index_path,
-        settings=chromadb.Settings(anonymized_telemetry=False),
-    )
+from rag.store import list_collection_names, drop_collection
 
 
 def main():
@@ -42,8 +33,7 @@ def main():
 
     config = load_config()
     active = config.get("collection_name", "obsidian_markdown")
-    client = _get_client(config)
-    existing = set(client.list_collections())  # Chroma 0.6.x returns names
+    existing = list_collection_names(config)
 
     for name in args.names:
         if name == active and not args.force:
@@ -53,8 +43,7 @@ def main():
         if name not in existing:
             print(f"skip {name!r}: not present")
             continue
-        count = client.get_collection(name).count()
-        client.delete_collection(name)
+        count = drop_collection(config, name)
         print(f"dropped {name!r} ({count} chunks)")
 
     return 0

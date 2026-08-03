@@ -36,6 +36,12 @@ INDEXER_MODULE = "rag.indexer"
 # concurrency guard to refuse a second run.
 ACTIVE_STATUSES = ("queued", "running")
 
+# Cap on retained *finished* jobs. start() prunes the registry to this many on
+# each new run (see JobManager._prune_locked), so a long-lived server can't
+# accumulate one record + monitor-thread ref per reindex forever. Active jobs
+# are never counted against or evicted by this cap.
+_MAX_FINISHED_JOBS = 50
+
 
 def _now() -> str:
     """UTC timestamp (ISO 8601) for job start/finish records."""
@@ -86,9 +92,9 @@ class JobManager:
     """Tracks reindex jobs in a lock-guarded, single-process registry."""
 
     def __init__(self) -> None:
-        # TODO: registry grows unbounded — one record + thread ref per reindex kept
-        # for the life of the (long-lived) server process. Add a TTL/cap and prune
-        # finished jobs as future cleanup. Harmless in practice (reindexes are rare).
+        # Registry is bounded: start() prunes finished jobs to _MAX_FINISHED_JOBS
+        # (see _prune_locked), so neither _jobs nor _threads grows without limit
+        # over the life of the long-lived server process.
         self._jobs: dict[str, dict] = {}
         self._threads: dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
@@ -104,6 +110,7 @@ class JobManager:
         spawned (non-blocking) while still holding the lock, so a second POST
         arriving mid-spawn already sees a ``running`` job."""
         with self._lock:
+            self._prune_locked()
             if any(j["status"] in ACTIVE_STATUSES for j in self._jobs.values()):
                 return None, None
 
@@ -151,6 +158,30 @@ class JobManager:
             thread.join(timeout)
 
     # ── internals ───────────────────────────────────────────────────────────
+
+    def _prune_locked(self) -> None:
+        """Evict the oldest finished jobs so the registry stays bounded.
+
+        MUST be called with ``self._lock`` held (start() is the only caller). Keeps
+        the ``_MAX_FINISHED_JOBS`` most-recently-finished jobs and drops the rest
+        from BOTH ``_jobs`` and ``_threads`` — closing the record + thread-ref leak.
+        Only jobs in a terminal status are eligible; active (``queued``/``running``)
+        jobs are never evicted. A finished job's monitor thread has already exited
+        (status flips to terminal inside ``_monitor`` just before it returns), so
+        removing the record here cannot race the final status transition."""
+        finished = [
+            jid for jid, rec in self._jobs.items()
+            if rec["status"] not in ACTIVE_STATUSES
+        ]
+        if len(finished) <= _MAX_FINISHED_JOBS:
+            return
+        # ISO-8601 `finished` timestamps sort chronologically; fall back to
+        # `started` for the (transient) case where `finished` is unset.
+        finished.sort(key=lambda jid: self._jobs[jid]["finished"]
+                      or self._jobs[jid]["started"] or "")
+        for jid in finished[:len(finished) - _MAX_FINISHED_JOBS]:
+            self._jobs.pop(jid, None)
+            self._threads.pop(jid, None)
 
     def _monitor(self, job_id: str, proc) -> None:
         """Block on the subprocess (off the event loop), then update the record.

@@ -40,8 +40,6 @@ query_instruction: ""
 embedding_batch_size: 16
 markdown_workers: 1
 pdf_workers: 1
-embedding_workers: 1     # DEAD — read nowhere, see below
-include_extensions: [".md"]   # DEAD — read nowhere, see below
 
 pdf_sources:
   - path: '/path/to/Books/'
@@ -60,11 +58,6 @@ extractor:
   obsidian_notes_path: '/path/to/Career Knowledge Base/Resources/Generated/Resource Notes'
   mocs_path: '/path/to/Career Knowledge Base/Resources/Generated'
 ```
-
-> **Two keys in this file are dead.** `embedding_workers` and `include_extensions`
-> are set in all three profiles but read nowhere in `src/`: the streaming indexer
-> superseded the first, and markdown discovery is a hardcoded `rglob("*.md")`. They
-> are kept only for schema parity — changing them has no effect.
 
 ### Field reference
 
@@ -86,8 +79,6 @@ extractor:
 | `embedding_batch_size` | `16` | Chunks per `model.encode()` call. Keep at 16 on Jetson (8 GB unified RAM). |
 | `markdown_workers` | `1` | ThreadPoolExecutor threads for MD extraction. 1 = sequential. |
 | `pdf_workers` | `1` | ThreadPoolExecutor threads for PDF extraction. Keep at 1 on Jetson. |
-| `embedding_workers` | `1` | **Dead key** — read nowhere in `src/`. Superseded by the streaming indexer. Kept for schema parity only. |
-| `include_extensions` | `[".md"]` | **Dead key** — read nowhere in `src/`. Markdown discovery is a hardcoded `rglob("*.md")`. Kept for schema parity only. |
 | `pdf_sources` | `[]` | List of `{path, type}` PDF source directories. `type` is stored as chunk metadata. Acts as a **fallback**: files whose name is already covered by a `json_sources` document are skipped, so configuring both never double-indexes. |
 | `json_sources` | `[]` | List of `{path}` dirs of pre-extracted document JSON (`indexed/*.json`, produced by `src/extractor/`): full `text` + metadata (title, primary_topic→domain, resource_type→type, tags, confidence). Deterministic, so re-runs are idempotent. |
 | `reranker_model` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder used at query time (no reindex). |
@@ -200,7 +191,7 @@ code change**. Two profiles ship today, run as two independent instances:
 | `rerank_default` | `false` — measured: rerank costs overall recall@5 (0.911 → 0.844) on this corpus | `true` — kept on until there is a wiki eval set; the personal-corpus finding is corpus-specific and may not transfer |
 | `tag_fetch_k` | 200 | 400 |
 | `embedding_batch_size` | 16 | 64 |
-| `*_workers` | 1 | `markdown_workers: 8` (`embedding_workers: 4` is also set but is a dead key — no effect) |
+| `*_workers` | 1 | `markdown_workers: 8` |
 | `collection_name` | `obsidian_markdown` | `wiki_lm` |
 | `index_path` | `./chroma_db` | `./chroma_db_wiki` |
 | `vault_path` | personal vault checkout | wiki repo checkout (placeholder path — update once the wiki checkout exists) |
