@@ -453,9 +453,6 @@ Summary, ranked by impact/effort — do these in order, and build the eval set (
 
 Found during a full repo review, deliberately not fixed:
 
-- **`src/rag/api/jobs.py`** — the reindex job registry is never pruned; one record +
-  thread ref per reindex lives for the server process's lifetime. The only `TODO` in
-  `src/`. Harmless in practice (reindexes are rare).
 - **`make install` cannot run `make test-unit`** — `pytest` is only in the `dev` extra,
   which `--no-deps` skips. `uv pip install pytest` separately.
 - **CI covers Python 3.10 only**, not the 3.12 used for macOS development, and has no
