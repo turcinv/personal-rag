@@ -39,9 +39,6 @@ store: chroma
 # sha256 of chunk TEXT, not the embedding — see chunking.stable_id).
 collection_name: "wiki_lm"
 
-include_extensions:
-  - ".md"
-
 exclude_dirs:
   - ".obsidian"
   - ".claude"
@@ -113,7 +110,6 @@ tag_fetch_k: 400
 embedding_batch_size: 64
 markdown_workers: 8        # threads for parallel MD extraction (I/O bound)
 pdf_workers: 1             # unused (no pdf_sources in this profile); kept for schema parity
-embedding_workers: 4       # CPU fallback workers (ignored when CUDA is available)
 
 # No pdf_sources, no json_sources, no extractor: block — this corpus is
 # markdown-only (see header comment). The book/resource catalog pipeline
