@@ -456,10 +456,6 @@ Found during a full repo review, deliberately not fixed:
 - **`src/rag/api/jobs.py`** — the reindex job registry is never pruned; one record +
   thread ref per reindex lives for the server process's lifetime. The only `TODO` in
   `src/`. Harmless in practice (reindexes are rare).
-- **There is no `rag-eval` console script**, unlike the other 16 `rag-*` entry points.
-  The eval harness runs via `make eval` (→ `scripts/eval_recall.py`) or
-  `python -m rag.eval`. Stale references to `rag-eval` as a command were corrected on
-  2026-07-28; adding the entry point would be the tidier fix.
 - **`make install` cannot run `make test-unit`** — `pytest` is only in the `dev` extra,
   which `--no-deps` skips. `uv pip install pytest` separately.
 - **CI covers Python 3.10 only**, not the 3.12 used for macOS development, and has no
