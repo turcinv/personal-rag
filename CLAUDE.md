@@ -459,8 +459,6 @@ Found during a full repo review, deliberately not fixed:
   lint or type-check step. `ci.yml`'s comment claims a `<3.11` pin that doesn't exist.
 - **Config profiles don't work in Docker** — both images copy only `config.yaml` and
   neither Compose file passes `RAG_CONFIG_PATH`. Axis 1 is host-venv-only.
-- **`tests/eval/baseline.json` is stale** (205,476 chunks, 2026-07-20). Compare against
-  `post_update_norerank.json` (202,132) or refresh it.
 - **`config.logmanager.yaml`'s `vault_path` doesn't exist yet** (declared placeholder).
   Indexing that profile creates an empty `wiki_lm` collection without erroring — the
   anti-wipe guard can't fire on an already-empty index.

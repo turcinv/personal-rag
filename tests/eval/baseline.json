@@ -1,16 +1,16 @@
 {
-  "generated_at": "2026-07-20T15:13:05",
+  "generated_at": "2026-08-03T14:12:14",
   "model": "sentence-transformers/all-MiniLM-L6-v2",
   "collection": "obsidian_markdown",
-  "collection_count": 205476,
+  "collection_count": 204252,
   "retrieval_depth": 10,
   "rerank": false,
   "hybrid": false,
   "overall": {
     "n": 45,
-    "recall@5": 0.8889,
-    "recall@10": 0.9333,
-    "mrr": 0.789
+    "recall@5": 0.9111,
+    "recall@10": 0.9556,
+    "mrr": 0.7945
   },
   "by_kind": {
     "resource": {
@@ -21,9 +21,9 @@
     },
     "vault": {
       "n": 30,
-      "recall@5": 0.8667,
-      "recall@10": 0.9,
-      "mrr": 0.7287
+      "recall@5": 0.9,
+      "recall@10": 0.9333,
+      "mrr": 0.737
     }
   },
   "per_query": [
@@ -64,9 +64,9 @@
         "Dot Product vs. Cosine Similarity",
         "Mathematical Vectors in Semantic Search"
       ],
-      "hit_rank": null,
-      "hit@5": false,
-      "hit@10": false
+      "hit_rank": 4,
+      "hit@5": true,
+      "hit@10": true
     },
     {
       "query": "how to evaluate retrieval quality in a RAG system",
@@ -480,5 +480,5 @@
       "hit@10": true
     }
   ],
-  "label": "baseline 2026-07-20 post-reindex (205476 chunks, +26 books)"
+  "label": "baseline 2026-08-03 post-reindex"
 }
