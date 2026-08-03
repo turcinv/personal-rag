@@ -155,3 +155,36 @@ class ChromaStore:
             {"document": doc, "metadata": meta, "distance": dist}
             for doc, meta, dist in zip(docs, metas, distances)
         ]
+
+
+# ── backend-catalog helpers (span collections) ──────────────────────────────────
+#
+# A ChromaStore is bound to exactly ONE named collection. These module functions
+# operate on the whole backend catalog (list/drop collections) — there is no
+# RetrievalStore Protocol method for that, and there deliberately shouldn't be
+# (it's admin tooling, not the retrieval seam). They live here so ``chromadb``
+# stays confined to this one module; rag.store re-exports them behind the same
+# backend gate as get_store. Only caller today: scripts/drop_collections.py.
+
+
+def _catalog_client(config: dict):
+    """PersistentClient at the configured ``index_path`` — same connection
+    settings as :class:`ChromaStore`, for operations that span collections."""
+    index_path = config.get("index_path", "./chroma_db")
+    return chromadb.PersistentClient(
+        path=index_path,
+        settings=chromadb.Settings(anonymized_telemetry=False),
+    )
+
+
+def list_collection_names(config: dict) -> set:
+    """Return the set of collection names in the configured index."""
+    return set(_catalog_client(config).list_collections())  # Chroma 0.6.x returns names
+
+
+def drop_collection(config: dict, name: str) -> int:
+    """Delete the named collection; return the chunk count it held before drop."""
+    client = _catalog_client(config)
+    count = client.get_collection(name).count()
+    client.delete_collection(name)
+    return count

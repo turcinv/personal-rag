@@ -109,6 +109,7 @@ def test_profiles_carry_expected_rerank_default(monkeypatch):
 import chromadb
 
 from rag.store.chroma_store import ChromaStore
+from rag.store import get_store, list_collection_names, drop_collection
 
 
 def _raw_collection(name):
@@ -351,15 +352,50 @@ def test_indexer_main_raises_and_does_not_prune_when_zero_files_but_store_nonemp
     assert verify_store.existing_ids() == {"x1", "x2"}
 
 
+# ── backend-catalog helpers (list / drop collections) ───────────────────────────
+#
+# Used by scripts/drop_collections.py — operations a single-collection ChromaStore
+# can't express (they span the index's whole collection catalog).
+
+
+def test_catalog_helpers_list_and_drop_collections():
+    """list_collection_names sees every collection in one index dir; drop_collection
+    returns the pre-drop chunk count and removes only the named collection."""
+    index_path = tempfile.mkdtemp()
+    config = {"store": "chroma", "index_path": index_path, "collection_name": "col_a"}
+
+    # Two collections in the SAME index dir (a ChromaStore only ever binds one).
+    for name in ("col_a", "col_b"):
+        store = get_store(config, collection_name=name)
+        store.ensure(name)
+        store.upsert(["x"], [[1.0, 0.0, 0.0, 0.0]], ["doc"], [{"path": "p"}])
+
+    assert list_collection_names(config) == {"col_a", "col_b"}
+
+    dropped = drop_collection(config, "col_b")
+    assert dropped == 1                                   # pre-drop chunk count
+    assert list_collection_names(config) == {"col_a"}     # only col_b removed
+
+
+def test_catalog_helpers_reject_unsupported_backend():
+    """Same backend gate as get_store — only 'chroma' is implemented."""
+    config = {"store": "opensearch", "index_path": tempfile.mkdtemp()}
+    with pytest.raises(ValueError):
+        list_collection_names(config)
+    with pytest.raises(ValueError):
+        drop_collection(config, "whatever")
+
+
 # ── no chromadb leak outside the store package ───────────────────────────────────
 
 
 def test_chromadb_import_confined_to_chroma_store_module():
     """Only src/rag/store/chroma_store.py may import/use chromadb — every other
     module in the rag engine package must go through the RetrievalStore seam.
-    (scripts/drop_collections.py is a documented, out-of-package exception —
-    admin catalog tooling, not part of the rag engine — and is intentionally
-    NOT scoped by this check.)"""
+    (scripts/ and tests/ live outside src/rag/ and are not scoped by this check;
+    both former direct-chromadb callers — scripts/drop_collections.py and
+    tests/test_queries.py — now route through the rag.store package too, via
+    get_store / list_collection_names / drop_collection.)"""
     rag_src = REPO_ROOT / "src" / "rag"
     allowed = rag_src / "store" / "chroma_store.py"
 

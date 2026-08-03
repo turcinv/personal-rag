@@ -16,7 +16,7 @@ import sys
 
 from rag.utils import load_config  # sets telemetry env var and patches posthog before chromadb loads
 
-import chromadb
+from rag.store import get_store
 from sentence_transformers import SentenceTransformer
 
 # ---------------------------------------------------------------------------
@@ -59,11 +59,7 @@ DISTANCE_WARN = 0.75
 def run_tests(filter_keyword: str = ""):
     config = load_config()
     model = SentenceTransformer(config["embedding_model"])
-    client = chromadb.PersistentClient(
-        path=config["index_path"],
-        settings=chromadb.Settings(anonymized_telemetry=False),
-    )
-    collection = client.get_collection(config["collection_name"])
+    store = get_store(config)
 
     queries = TEST_QUERIES
     if filter_keyword:
@@ -79,14 +75,10 @@ def run_tests(filter_keyword: str = ""):
 
     for domain, query in queries:
         embedding = model.encode([query], normalize_embeddings=True).tolist()[0]
-        results = collection.query(
-            query_embeddings=[embedding],
-            n_results=N_RESULTS,
-            include=["documents", "metadatas", "distances"],
-        )
-        docs      = results["documents"][0]
-        metas     = results["metadatas"][0]
-        distances = results["distances"][0]
+        records   = store.query(embedding, N_RESULTS)
+        docs      = [r["document"] for r in records]
+        metas     = [r["metadata"] for r in records]
+        distances = [r["distance"] for r in records]
         best      = distances[0] if distances else 1.0
 
         status = "OK" if best < DISTANCE_WARN else "WEAK"
