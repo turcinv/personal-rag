@@ -35,3 +35,7 @@ pyjwt
 # resolves transitively (fastapi test client / starlette), declared direct here
 # because the generation clients import it at runtime.
 httpx
+
+# Model Context Protocol transport and its public protocol types.
+mcp==2.0.0
+mcp-types==2.0.0

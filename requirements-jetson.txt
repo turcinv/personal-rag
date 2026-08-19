@@ -35,3 +35,7 @@ pyjwt==2.13.0
 # without a provider SDK. httpx also resolves transitively via chromadb, but it
 # is declared here so a chromadb bump cannot silently remove it.
 httpx==0.28.1
+
+# Model Context Protocol transport and its public protocol types.
+mcp==2.0.0
+mcp-types==2.0.0

@@ -1,5 +1,5 @@
 .PHONY: help install index build-lexical query eval pipeline-status sync-to-jetson test test-unit build build-jetson \
-        serve docker-serve jetson-serve \
+        serve mcp docker-serve jetson-serve \
         docker-index docker-query docker-test \
         jetson-pipeline-status jetson-full-pipeline \
         jetson-index jetson-query jetson-eval jetson-test \
@@ -34,6 +34,7 @@ help:
 	@echo "  make pipeline-status      check all extraction pipeline outputs"
 	@echo "  make eval [ARGS=...]      recall@k / MRR eval over golden_queries.jsonl"
 	@echo "  make serve                run the HTTP API locally (rag-serve, port 8000)"
+	@echo "  make mcp                  run the local stdio MCP search server"
 	@echo "  make sync-to-jetson       rsync all extraction outputs to Jetson (set JETSON_HOST)"
 	@echo "  make test-unit            offline pytest unit suite"
 	@echo "  make test [K=keyword]     retrieval smoke tests (needs an index)"
@@ -102,6 +103,11 @@ eval:
 # from the environment / .env. Loads model + collection + reranker once.
 serve:
 	.venv/bin/rag-serve
+
+# Run the local MCP search server over stdio. The client owns stdin/stdout;
+# configure an MCP host with the absolute path to .venv/bin/rag-mcp.
+mcp:
+	.venv/bin/rag-mcp
 
 # Sync all extraction outputs (text_output_*, indexed/, resources.db) from macOS → Jetson.
 # Set JETSON_HOST in .env or pass on the command line: make sync-to-jetson JETSON_HOST=gpu-01
