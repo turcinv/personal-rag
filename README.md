@@ -248,6 +248,36 @@ docker compose -f docker-compose.jetson.yml run --rm rag python -m rag.query "yo
 
 The first `build-jetson` will be slow (~1.5 GB PyTorch layer). Subsequent builds reuse the cached layer.
 
+## MCP (AI assistant integration)
+
+The `rag-mcp` server exposes your knowledge base as a tool that AI assistants can call directly from their chat interface. It runs over stdio (local process) and works with Claude Desktop, Kiro, Cursor, and any other MCP-compatible host.
+
+```bash
+# Quick test — a working server prints nothing and waits on stdin
+.venv/bin/rag-mcp
+```
+
+Configure your host with the absolute path to the executable and your config/index paths:
+
+```json
+{
+  "mcpServers": {
+    "personal-rag": {
+      "command": "/absolute/path/to/personal-rag/.venv/bin/rag-mcp",
+      "args": [],
+      "env": {
+        "RAG_CONFIG_PATH": "/absolute/path/to/personal-rag/config.personal.yaml",
+        "RAG_INDEX_PATH": "/absolute/path/to/personal-rag/chroma_db"
+      }
+    }
+  }
+}
+```
+
+Then ask your assistant something like "What do I know about Kubernetes?" and it will search your vault.
+
+Full setup guide, verification steps, and troubleshooting: [docs/mcp.md](docs/mcp.md).
+
 ## Backend API
 
 An HTTP backend (`rag-serve`) serves semantic queries over the same index. It loads the embedding model, the store collection, the reranker and (if configured) the answer generator **once** at startup and keeps them resident, so the internal bots (Telegram / Wiki) don't pay the CLI's per-query cold-start. It reuses `query.search()` — retrieval is never reimplemented. It runs on the Jetson, is reached over Tailscale (internal only), and uses JWT bearer tokens for auth — there is no in-app TLS.
@@ -387,6 +417,7 @@ Pre-extracted JSON     ─┘         │
 |---|---|
 | [CLAUDE.md](CLAUDE.md) | **Start here** — current corpus state, indexing behaviour, gotchas, quality roadmap |
 | [docs/api.md](docs/api.md) | Backend HTTP API — endpoints, JWT auth, service tokens, curl + Python client |
+| [docs/mcp.md](docs/mcp.md) | MCP search server — quickstart, host setup, verification, troubleshooting |
 | [docs/architecture.md](docs/architecture.md) | Pipeline walkthrough, streaming design, chunk IDs, store seam, rerank, generation |
 | [docs/configuration.md](docs/configuration.md) | Full config reference, env var overrides, hardware tuning, config profiles |
 | [docs/jetson.md](docs/jetson.md) | Jetson install guide, Docker, memory budget, GPU constraints |

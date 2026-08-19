@@ -1,83 +1,62 @@
 # MCP search server
 
-`personal-rag` exposes its existing semantic retrieval seam as a local Model
-Context Protocol (MCP) tool. The first increment is intentionally small:
+`personal-rag` exposes its semantic retrieval as a local [Model Context Protocol](https://modelcontextprotocol.io/) tool. AI assistants like Claude Desktop, Kiro, and Cursor can search your Obsidian vault and PDF library directly from their chat interface.
 
-- stdio transport only;
-- one tool, `search`;
-- inputs: nonblank `query` and optional `n_results` (default 8, range 1–50);
-- complete `query.search()` records, including full passage text and metadata.
+The first increment is intentionally minimal:
 
-Filters, resources, answer generation, indexing, and remote HTTP transport are
-not exposed yet.
+- stdio transport only (local process, no HTTP yet)
+- one tool: `search`
+- inputs: nonblank `query` and optional `n_results` (default 8, range 1-50)
+- returns complete `query.search()` records with full passage text and metadata
 
-## Prerequisites
+Filters, resources, answer generation, indexing triggers, and remote HTTP transport are not exposed yet.
 
-Install the project and populate the selected profile's index:
+## Quickstart (5 minutes)
+
+### 1. Install the project and populate your index
 
 ```bash
+cd /path/to/personal-rag
 make install
 make index
 ```
 
-The embedding model, and the reranker when the profile enables it, must already
-be available in the device's Hugging Face cache for fully offline retrieval.
-The MCP adapter itself adds no outbound network calls. It must run on the device
-that can read the local index; stdio is cross-platform but is not a remote
-transport.
+If you already have a populated index, skip `make index`.
 
-## Privacy and retention
+### 2. Verify the MCP server starts
 
-The configured MCP host receives every returned passage and its metadata in
-full. Trust that host and review its model-provider/data-retention settings:
-Claude Desktop, Kiro, Cursor, or another host may send tool results to a remote
-model even though retrieval and the MCP adapter are local. Do not expose a
-sensitive corpus to a host whose data boundary is unacceptable.
-
-MCP searches reuse `query.search()`, whose existing info log includes the raw
-query text. With the default logging setup, queries are retained in a rotating
-text log and a SQLite log. Paths resolve from `RAG_LOG_PATH` and
-`RAG_LOG_DB_PATH`, then profile settings, then `./logs/rag.log` and the
-corresponding `.sqlite` path. Use absolute environment paths when the MCP host's
-working directory is not the project root, and protect or rotate those files as
-appropriate.
-
-The executable is:
-
-- macOS/Linux: `<checkout>/.venv/bin/rag-mcp`
-- Windows: `<checkout>/.venv/Scripts/rag-mcp.exe`
-
-Run it manually with `make mcp` or the absolute executable path. A healthy stdio
-server prints nothing and waits for an MCP client on stdin. Stop it with
-`Ctrl-C`. The official SDK explains why MCP hosts launch stdio servers as child
-processes and why absolute paths are important in its
-[host setup guide](https://py.sdk.modelcontextprotocol.io/get-started/real-host/index.md).
-
-## Profile and path configuration
-
-Desktop hosts usually start child processes from their own working directory
-and with a reduced environment. Use absolute paths for the executable and these
-environment variables:
-
-```text
-RAG_CONFIG_PATH=/absolute/path/to/personal-rag/config.personal.yaml
-RAG_INDEX_PATH=/absolute/path/to/personal-rag/chroma_db
+```bash
+.venv/bin/rag-mcp
 ```
 
-`RAG_CONFIG_PATH` selects the active profile. `RAG_INDEX_PATH` avoids resolving
-a relative `index_path` against the host application's working directory. Other
-supported `RAG_*` overrides continue to work as documented in
-[configuration.md](configuration.md).
+A working server prints **nothing** and waits on stdin. That silence is correct - it is waiting for an MCP client to connect. Press `Ctrl-C` to stop it.
 
-The active profile's `rerank_default` is honored. On the personal profile this
-is currently disabled because it reduced measured recall; clients cannot
-override it in this minimal tool.
+If you see a traceback instead, check the [Troubleshooting](#troubleshooting) section below.
 
-## Claude Desktop
+### 3. Find your absolute paths
 
-On macOS, edit
-`~/Library/Application Support/Claude/claude_desktop_config.json`. On Windows,
-edit `%APPDATA%\Claude\claude_desktop_config.json`:
+MCP hosts launch servers as child processes from their own working directory, so relative paths break. You need absolute paths:
+
+```bash
+# The executable
+echo "$(pwd)/.venv/bin/rag-mcp"
+
+# The config profile (use whichever profile you want)
+echo "$(pwd)/config.personal.yaml"
+
+# The vector store
+echo "$(pwd)/chroma_db"
+```
+
+Copy these values for the next step.
+
+### 4. Configure your MCP client
+
+Pick your host and paste the configuration below, replacing the placeholder paths with the absolute paths from step 3.
+
+#### Claude Desktop
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
 ```json
 {
@@ -94,13 +73,11 @@ edit `%APPDATA%\Claude\claude_desktop_config.json`:
 }
 ```
 
-Use `.venv\\Scripts\\rag-mcp.exe` for `command` on Windows. Fully quit and
-restart Claude Desktop after editing its configuration.
+After saving, **fully quit** Claude Desktop (not just close the window) and reopen it.
 
-## Kiro
+#### Kiro
 
-Add the server to the workspace `.kiro/settings/mcp.json` or the user-level
-`~/.kiro/settings/mcp.json`:
+Add to `.kiro/settings/mcp.json` (workspace-level) or `~/.kiro/settings/mcp.json` (user-level):
 
 ```json
 {
@@ -118,12 +95,11 @@ Add the server to the workspace `.kiro/settings/mcp.json` or the user-level
 }
 ```
 
-Kiro reconnects MCP servers after configuration changes. You can also reconnect
-it from the MCP Server view.
+Kiro reconnects MCP servers automatically after config changes. You can also reconnect manually from the MCP Server view in the sidebar.
 
-## Cursor and other stdio hosts
+#### Cursor
 
-Cursor uses the same `mcpServers` command/args shape in `.cursor/mcp.json`:
+Create `.cursor/mcp.json` in your project root:
 
 ```json
 {
@@ -140,32 +116,268 @@ Cursor uses the same `mcpServers` command/args shape in `.cursor/mcp.json`:
 }
 ```
 
-For another MCP host, configure a stdio server with the same absolute command,
-no arguments, and environment values.
+#### VS Code (Copilot Agent mode)
 
-## Using the tool
-
-Ask the host a knowledge-base question, for example:
-
-> What do I know about Kubernetes?
-
-The host can call:
+Create `.vscode/mcp.json` in your project root:
 
 ```json
 {
-  "query": "What do I know about Kubernetes?",
-  "n_results": 8
+  "servers": {
+    "personal-rag": {
+      "type": "stdio",
+      "command": "/absolute/path/to/personal-rag/.venv/bin/rag-mcp",
+      "args": [],
+      "env": {
+        "RAG_CONFIG_PATH": "/absolute/path/to/personal-rag/config.personal.yaml",
+        "RAG_INDEX_PATH": "/absolute/path/to/personal-rag/chroma_db"
+      }
+    }
+  }
 }
 ```
 
-Every result includes the full `document`, `metadata`, `distance`, and `rank`,
-plus `rerank_score` when reranking was applied. Full records preserve source
-context but can consume substantial model context; request fewer results when a
-small evidence set is sufficient.
+Requires VS Code 1.99+ with the GitHub Copilot extension in Agent mode.
 
-For protocol-level testing, the official MCP SDK documents its
-[in-memory client](https://py.sdk.modelcontextprotocol.io/get-started/testing/index.md),
-which is also what this project's offline MCP tests use.
+#### Any other stdio host
 
-_Content from the MCP SDK documentation was rephrased for compliance with
-licensing restrictions._
+Configure a stdio-based MCP server with:
+- **command**: the absolute path to `.venv/bin/rag-mcp`
+- **args**: empty
+- **env**: set `RAG_CONFIG_PATH` and `RAG_INDEX_PATH` as shown above
+
+### 5. Test it
+
+Ask your AI assistant a question about something in your vault:
+
+> What do I know about Kubernetes?
+
+The assistant should call the `search` tool and incorporate results from your knowledge base into its answer.
+
+## Verifying the connection
+
+### Check the tool is advertised
+
+In Claude Desktop, look for the hammer icon showing available tools. You should see `search` listed under `personal-rag`.
+
+In Kiro, check the MCP Server view in the sidebar - it should show `personal-rag` as connected with one tool.
+
+In Cursor, check Settings > MCP - the server should show as connected.
+
+### Manual smoke test
+
+You can test the server works end-to-end without a host by running:
+
+```bash
+make mcp
+```
+
+This starts `rag-mcp` over stdio. It will sit and wait (no output is correct). Press `Ctrl-C` to stop.
+
+For protocol-level testing, use the official MCP Inspector:
+
+```bash
+uv run --with "mcp[cli]" mcp dev src/rag/mcp/server.py
+```
+
+This opens an interactive web UI where you can call `search` directly and see the raw results.
+
+### Check server logs
+
+The MCP server logs to the same files as `rag-query`:
+- Text log: `./logs/rag.log` (or the path set by `RAG_LOG_PATH`)
+- SQLite log: `./logs/rag.sqlite` (or the path set by `RAG_LOG_DB_PATH`)
+
+Look for `MCP startup: loading embedding model` and `MCP startup complete` to confirm initialization succeeded.
+
+## Troubleshooting
+
+### Server exits immediately with a traceback
+
+**ModuleNotFoundError: No module named 'mcp'**
+
+The MCP SDK is not installed. Reinstall:
+
+```bash
+cd /path/to/personal-rag
+uv pip install -r requirements.txt
+uv pip install -e . --no-deps
+```
+
+**ModuleNotFoundError: No module named 'rag'**
+
+The package is not installed in editable mode:
+
+```bash
+uv pip install -e . --no-deps
+```
+
+**FileNotFoundError or "collection not found"**
+
+The index path cannot be resolved. Either:
+- Set `RAG_INDEX_PATH` to the absolute path of your `chroma_db` directory, or
+- Run the MCP server from the project root so relative paths resolve correctly
+
+### Host says "server disconnected" or shows no tools
+
+**Most common cause: relative paths.** The host starts the server from its own working directory, not yours. Use absolute paths for `command` and all `env` values.
+
+**Second most common: stale config.** Fully quit and restart the host after editing its config. Claude Desktop in particular requires a full quit (not just closing the window).
+
+**Third: the executable is not found.** Verify the path exists:
+
+```bash
+ls -la /absolute/path/to/personal-rag/.venv/bin/rag-mcp
+```
+
+If it does not exist, reinstall:
+
+```bash
+cd /path/to/personal-rag
+uv pip install -e . --no-deps
+```
+
+### Server starts but search returns no results
+
+- Verify your index is populated: `make query Q="test"` should return results
+- Check that `RAG_CONFIG_PATH` points to the correct profile
+- Check that `RAG_INDEX_PATH` points to the same `chroma_db` the indexer wrote to
+
+### "Internal server error" on tool calls
+
+Check the log files for the underlying exception:
+
+```bash
+tail -50 logs/rag.log
+```
+
+Common causes:
+- The embedding model is not cached locally (first run downloads ~80 MB from HuggingFace)
+- Insufficient memory on Jetson (the model + store + reranker share 8 GB)
+
+### Claude Desktop specific
+
+Claude Desktop keeps per-server logs at:
+- macOS: `~/Library/Logs/Claude/mcp-server-personal-rag.log`
+- Windows: `%APPDATA%\Claude\logs\mcp-server-personal-rag.log`
+
+The main connection log is `mcp.log` in the same directory.
+
+### Windows specific
+
+Use backslashes and the `.exe` extension:
+
+```json
+{
+  "command": "C:\\path\\to\\personal-rag\\.venv\\Scripts\\rag-mcp.exe"
+}
+```
+
+## Configuration reference
+
+### Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `RAG_CONFIG_PATH` | Select the active config profile (default: `./config.yaml`) |
+| `RAG_INDEX_PATH` | Override the vector store directory |
+| `RAG_VAULT_PATH` | Override the vault path in the selected profile |
+| `RAG_LOG_PATH` | Override the text log file location |
+| `RAG_LOG_DB_PATH` | Override the SQLite log location |
+
+All other `RAG_*` overrides documented in [configuration.md](configuration.md) also work.
+
+### Profile behavior
+
+The active profile's `rerank_default` setting is honored:
+- `config.personal.yaml`: reranking **off** (measured to reduce recall@5 on this corpus)
+- `config.logmanager.yaml`: reranking **on**
+
+Clients cannot override reranking per-call in this minimal tool. If you want reranking on/off, select the appropriate profile via `RAG_CONFIG_PATH`.
+
+### Tool schema
+
+The `search` tool exposes exactly two parameters:
+
+| Parameter | Type | Required | Default | Constraints |
+|-----------|------|----------|---------|-------------|
+| `query` | string | yes | - | non-blank after whitespace trimming |
+| `n_results` | integer | no | 8 | strict integer, 1-50 |
+
+Unknown parameters are rejected. Non-integer values for `n_results` (booleans, floats, strings) are rejected.
+
+### Response format
+
+Each result is a complete retrieval record:
+
+```json
+{
+  "document": "Full passage text, never truncated...",
+  "metadata": {
+    "title": "Kubernetes Notes",
+    "path": "Knowledge/DevOps/Kubernetes.md",
+    "domain": "DevOps",
+    "subdomain": "Container Orchestration",
+    "type": "Knowledge",
+    "source": "vault",
+    "status": "processed",
+    "confidence": "high",
+    "tags": "kubernetes, containers, devops",
+    "heading": "Scheduling"
+  },
+  "distance": 0.1842,
+  "rank": 1,
+  "rerank_score": 4.75
+}
+```
+
+`rerank_score` is present only when reranking was applied. `distance` may be `null` for lexical-only hybrid hits (not currently exposed via MCP).
+
+## Privacy and data retention
+
+### What leaves the device
+
+The MCP adapter itself makes **no outbound network calls**. Retrieval is fully local.
+
+However, the MCP **host** (Claude Desktop, Kiro, Cursor) receives every returned passage and its metadata. Depending on the host's configuration, that data may then be sent to a model provider (Anthropic, OpenAI, etc.) as tool-result context. Review your host's data-retention and model-provider settings before exposing a sensitive corpus.
+
+### What is logged locally
+
+MCP searches flow through `query.search()`, which logs the raw query text at INFO level. With the default logging setup, queries are retained in:
+
+- A rotating text log (default: `./logs/rag.log`)
+- A SQLite structured log (default: `./logs/rag.sqlite`)
+
+Paths resolve from `RAG_LOG_PATH` / `RAG_LOG_DB_PATH`, then profile config, then defaults. Use absolute paths in your MCP environment variables when the host's working directory differs from the project root.
+
+Rotate or protect these files as appropriate for your use case.
+
+## Architecture
+
+```
+MCP Host (Claude Desktop / Kiro / Cursor)
+    │
+    │  stdio (JSON-RPC over stdin/stdout)
+    │
+    ▼
+rag-mcp process
+    │
+    │  lifespan: loads config, model, store once
+    │
+    ▼
+query.search()  ←  the single retrieval seam
+    │
+    ▼
+ChromaStore (src/rag/store/)
+```
+
+The MCP server is a thin transport adapter. It never reimplements retrieval, never imports `chromadb` directly, and shares the exact same code path as `rag-query`, `POST /query`, and `make eval`.
+
+## Future plans
+
+Not yet implemented, planned for later increments:
+
+- Metadata filters (`domain`, `tags`, `status`, etc.) as optional tool parameters
+- `answer` tool wrapping the generation layer
+- `status` tool reporting index health
+- Streamable HTTP transport for remote/Jetson access
+- Resources exposing the document catalog for browsing
