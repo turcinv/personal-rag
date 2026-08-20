@@ -59,10 +59,11 @@ the Jetson's 8 GB memory constraint. Full report + prioritized roadmap:
 `Templates/RAG Quality Review Report.md` in the vault repo. Condensed version lives
 in this repo's `CLAUDE.md` → "Known Limitations & Improvement Roadmap."
 
-**Roadmap state as of 2026-07-28:** items 1, 3, 4, 5, 7 done; item 2 resolved as
-rejected (both stronger embedding models net-regressed on this corpus); **item 6
-(BM25/lexical hybrid) is the only one left**, and it is specced in
-`docs/OPENSEARCHSTORE_IMPLEMENTATION_PLAN.md` rather than being loose work.
+**Roadmap state:** items 1, 3, 4, 5, 6, 7 done; item 2 resolved as rejected
+(both stronger embedding models net-regressed on this corpus). Item 6 (BM25/RRF
+hybrid) is built as a client-side Chroma stand-in — measured recall-neutral, off
+by default; the native `hybrid=True` path lands with the planned OpenSearch
+backend (`docs/OPENSEARCHSTORE_IMPLEMENTATION_PLAN.md`).
 
 So the useful trigger for re-running this review is no longer "after items 1-6" —
 it is **whenever `make eval` moves materially**, or after any change to the embedding
@@ -96,19 +97,18 @@ make build-jetson      # first time only, ~1.5 GB PyTorch layer, cached after
 make jetson-index      # build/update the ChromaDB collection
 ```
 
-**Guarded, but not fully:** if *every* source reports 0 files while the collection
-already holds chunks, `indexer.main()` raises `RuntimeError` and prunes nothing —
-the error names the config keys and env overrides to check. This is the guard added
-after the 2026-07-15 incident, in which exactly this situation pruned 172,557
-chunks to zero. You do not need to Ctrl+C to beat the prune step.
+**Source-scoped safety:** missing, unreadable, disabled, degraded, and unexpectedly
+empty sources preserve their owned chunks while healthy sources reconcile
+independently. If *every* source reports 0 files while the collection already holds
+chunks, `indexer.main()` also raises `RuntimeError`. These guards cover the destructive
+failure behind the 2026-07-15 incident (172,557 chunks to zero).
 
-What the guard does **not** cover:
+What still requires operator attention:
 
-- A **partially** broken mount. One source empty while others are fine is
-  indistinguishable from a real deletion, and those chunks *will* be pruned. Read the
-  per-source file counts in the startup log.
-- An **already-empty** index. A fresh profile pointed at a bad path won't trip the
-  guard; it will "succeed" and create an empty collection.
+- Read the per-source census. Never use `--allow-empty-source-prune` or
+  `--allow-large-prune` to bypass an unexplained mount problem.
+- An **already-empty** index has nothing to preserve. A fresh profile pointed at bad
+  paths can still "succeed" and create an empty collection.
 
 If you do need to serve from the Jetson, `make jetson-serve` runs the API container.
 Budget memory for it: the server keeps the embedder resident (plus the cross-encoder

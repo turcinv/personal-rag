@@ -7,6 +7,22 @@ no chromadb."""
 import pytest
 
 import rag.query as q
+from rag.provenance import IndexProvenance, IndexState
+
+
+_TEST_STATE = IndexState.create(
+    IndexProvenance(
+        embedding_model="x",
+        embedding_revision="",
+        embedding_dimension=8,
+        normalized=True,
+        chunker_version="heading-paragraph-v1",
+        chunk_max_chars=1200,
+        chunk_overlap_chars=150,
+        metric="cosine",
+        corpus_profile="test",
+    )
+)
 
 
 class FakeStore:
@@ -21,6 +37,9 @@ class FakeStore:
         self.last_where = None
         self.last_text = None
         self.last_hybrid = None
+
+    def read_index_state(self):
+        return _TEST_STATE.as_dict()
 
     def query(self, embedding, k, where=None, *, text=None, hybrid=False):
         self.last_k = k
@@ -267,13 +286,12 @@ def test_no_tags_does_not_widen_even_with_tag_fetch_k_configured():
 
 
 def test_cli_status_and_repeated_tag_wire_through(monkeypatch, capsys):
-    """argparse accepts --status + repeated --tag; main() forwards status via the
-    real build_where and the tag list straight into search()."""
+    """argparse accepts --status + repeated --tag; main() forwards them as a
+    backend-neutral RetrievalFilter (no Chroma syntax constructed by the CLI)."""
     calls = {}
 
-    def fake_search(query, n_results=8, *, filters=None, tags=None, **kw):
-        calls["filters"] = filters
-        calls["tags"] = tags
+    def fake_search(query, n_results=8, *, retrieval_filter=None, **kw):
+        calls["retrieval_filter"] = retrieval_filter
         return []
 
     monkeypatch.setattr(q, "load_config", lambda: {"embedding_model": "x"})
@@ -284,8 +302,12 @@ def test_cli_status_and_repeated_tag_wire_through(monkeypatch, capsys):
         ["rag-query", "hello", "--status", "processed", "--tag", "devops", "--tag", "ci"],
     )
     q.main()
-    assert calls["tags"] == ["devops", "ci"]
-    assert calls["filters"] == {"status": {"$eq": "processed"}}
+    rf = calls["retrieval_filter"]
+    assert list(rf.tags) == ["devops", "ci"]
+    assert rf.status == "processed"
+    # The store compiler still yields the exact legacy where-dict.
+    from rag.store import compile_where
+    assert compile_where(rf) == {"status": {"$eq": "processed"}}
 
 
 # ── rerank_default: per-profile default for callers above search() ──────────────

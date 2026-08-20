@@ -1,111 +1,285 @@
-"""Incremental indexing engine.
-
-Source-agnostic: given a ``Source`` (from ``extractors``) and the snapshot of
-what's already in the collection, it embeds new chunks, refreshes metadata-only
-changes without re-embedding, skips unchanged chunks, and records every ID seen
-so the caller can prune stale ones. Works the same for Markdown, PDF, or JSON."""
+"""Bounded, source-scoped incremental indexing engine."""
 
 import gc
 import logging
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 import torch
 
 logger = logging.getLogger("rag")
-log = logger.info  # configured by setup_logging() in indexer.main()
+log = logger.info
+
+
+@dataclass(frozen=True)
+class SourceRunResult:
+    source_id: str
+    state: str
+    file_count: int
+    succeeded_files: int
+    failed_files: int
+    empty_files: int
+    total_chunks: int
+    new_chunks: int
+    updated_chunks: int
+    detail: str = ""
+
+    @property
+    def prune_eligible(self) -> bool:
+        return (
+            self.state == "completed"
+            and self.file_count > 0
+            and self.failed_files == 0
+            and self.empty_files == 0
+        )
+
+    def __iter__(self):
+        """Preserve historical ``total, new, updated = run_source(...)`` use."""
+        yield self.total_chunks
+        yield self.new_chunks
+        yield self.updated_chunks
 
 
 def embed_and_upsert(model, device, docs, ids, metas, embed_batch_size, store):
-    """Embed in small batches and upsert immediately; never accumulates in RAM."""
-    n = len(docs)
-    n_batches = (n + embed_batch_size - 1) // embed_batch_size
-    for batch_idx, i in enumerate(range(0, n, embed_batch_size), 1):
-        b_docs  = docs[i:i + embed_batch_size]
-        b_ids   = ids[i:i + embed_batch_size]
-        b_metas = metas[i:i + embed_batch_size]
-        embeddings = model.encode(b_docs, normalize_embeddings=True, batch_size=embed_batch_size)
-        store.upsert(ids=b_ids, embeddings=embeddings.tolist(), docs=b_docs, metas=b_metas)
+    """Embed in small batches and upsert immediately."""
+    count = len(docs)
+    batch_count = (count + embed_batch_size - 1) // embed_batch_size
+    for batch_index, start in enumerate(range(0, count, embed_batch_size), 1):
+        batch_docs = docs[start:start + embed_batch_size]
+        batch_ids = ids[start:start + embed_batch_size]
+        batch_metas = metas[start:start + embed_batch_size]
+        embeddings = model.encode(
+            batch_docs,
+            normalize_embeddings=True,
+            batch_size=embed_batch_size,
+        )
+        store.upsert(
+            ids=batch_ids,
+            embeddings=embeddings.tolist(),
+            docs=batch_docs,
+            metas=batch_metas,
+        )
         del embeddings
         if device == "cuda":
             torch.cuda.empty_cache()
-        if n_batches > 1:
-            log(f"      batch {batch_idx}/{n_batches}  ({min(i + embed_batch_size, n)}/{n} chunks)")
-
-
-def index_file_chunks(ids, docs, metas, existing_meta, seen_ids,
-                      model, device, embed_batch, store):
-    """Incrementally index one file's chunks against the existing index.
-
-    Records every chunk ID in ``seen_ids`` (used afterwards to prune stale
-    chunks). Chunk IDs are content-hashed, so for each chunk:
-      - new ID                       -> embed + upsert
-      - existing ID, metadata changed -> refresh metadata only (no re-embed)
-      - existing ID, metadata same    -> skip
-
-    Embeddings depend only on the chunk body, so a metadata-only edit (e.g. a
-    note's frontmatter or a heading) is applied with store.update_metadata
-    without paying to re-embed. Returns (n_new, n_updated, n_total)."""
-    seen_ids.update(ids)
-    new_i = [k for k, cid in enumerate(ids) if cid not in existing_meta]
-    upd_i = [k for k, cid in enumerate(ids)
-             if cid in existing_meta and metas[k] != existing_meta[cid]]
-
-    if new_i:
-        embed_and_upsert(model, device,
-                         [docs[k] for k in new_i], [ids[k] for k in new_i],
-                         [metas[k] for k in new_i], embed_batch, store)
-    if upd_i:
-        store.update_metadata(ids=[ids[k] for k in upd_i],
-                              metas=[metas[k] for k in upd_i])
-    return len(new_i), len(upd_i), len(ids)
-
-
-def preserve_existing(path_value, existing_meta, seen_ids):
-    """Mark a source's already-indexed chunks as seen so the stale-prune step
-    does not delete good data when that file's extraction fails this run."""
-    seen_ids.update(cid for cid, m in existing_meta.items() if m.get("path") == path_value)
-
-
-def _index_status(n_new, n_upd, n_total):
-    if n_new or n_upd:
-        return f"{n_new} new, {n_upd} meta / {n_total} chunks"
-    return f"unchanged, {n_total} chunks"
-
-
-def run_source(source, existing_meta, seen_ids, model, device, embed_batch, store):
-    """Run one ``Source``'s files through the incremental engine.
-
-    Returns (n_total, n_new, n_updated) for the source. Extraction runs in a
-    thread pool; embedding/upsert happens here in the main thread."""
-    log(f"\n{source.label}")
-    if not source.files:
-        return 0, 0, 0
-
-    n = len(source.files)
-    s_total = s_new = s_upd = 0
-    with ThreadPoolExecutor(max_workers=source.workers) as pool:
-        futures = [(pool.submit(source.extract, f), f) for f in source.files]
-        for idx, (future, f) in enumerate(futures, 1):
-            ids, docs, metas, err = future.result()
-            if err:
-                log(f"  [{idx}/{n}] SKIP {f.name}: {err.split(':', 1)[-1].strip()}")
-                if source.preserve_key is not None:
-                    preserve_existing(source.preserve_key(f), existing_meta, seen_ids)
-                continue
-            if not docs:
-                continue
-            n_new, n_upd, n_total = index_file_chunks(
-                ids, docs, metas, existing_meta, seen_ids,
-                model, device, embed_batch, store,
+        if batch_count > 1:
+            log(
+                f"      batch {batch_index}/{batch_count}  "
+                f"({min(start + embed_batch_size, count)}/{count} chunks)"
             )
-            log(f"  [{idx}/{n}] {f.name}  ({_index_status(n_new, n_upd, n_total)})")
-            s_total += n_total
-            s_new   += n_new
-            s_upd   += n_upd
-            del ids, docs, metas
-            gc.collect()
-            if device == "cuda":
-                torch.cuda.empty_cache()
 
-    log(f"  complete: {s_total} chunks ({s_new} embedded, {s_upd} metadata-updated this run)")
-    return s_total, s_new, s_upd
+
+def index_file_chunks(
+    ids,
+    docs,
+    metas,
+    reconciliation,
+    model,
+    device,
+    embed_batch,
+    store,
+    dry_run=False,
+):
+    """Classify one file's chunks and optionally apply inserts/metadata updates."""
+    new_indices, updated_indices = reconciliation.classify_and_mark(ids, metas)
+
+    if new_indices and not dry_run:
+        embed_and_upsert(
+            model,
+            device,
+            [docs[index] for index in new_indices],
+            [ids[index] for index in new_indices],
+            [metas[index] for index in new_indices],
+            embed_batch,
+            store,
+        )
+    if updated_indices and not dry_run:
+        store.update_metadata(
+            ids=[ids[index] for index in updated_indices],
+            metas=[metas[index] for index in updated_indices],
+        )
+    return len(new_indices), len(updated_indices), len(ids)
+
+
+def preserve_existing(source_id, file_id, reconciliation):
+    """Preserve prior chunks for one failed or unexpectedly empty file."""
+    return reconciliation.preserve_file(source_id, file_id)
+
+
+def _owned_metadata(metadatas, source, file_id):
+    return [
+        {
+            **metadata,
+            "source_id": source.source_id,
+            "source_kind": source.kind,
+            "file_id": file_id,
+        }
+        for metadata in metadatas
+    ]
+
+
+def _index_status(new, updated, total):
+    if new or updated:
+        return f"{new} new, {updated} meta / {total} chunks"
+    return f"unchanged, {total} chunks"
+
+
+def _bounded_extractions(source):
+    """Yield extraction results in source order with at most ``workers`` futures."""
+    window = max(1, int(source.workers))
+    paths = iter(enumerate(source.files, 1))
+    pending = deque()
+    maximum_depth = 0
+
+    with ThreadPoolExecutor(max_workers=window) as pool:
+        for _ in range(window):
+            try:
+                index, path = next(paths)
+            except StopIteration:
+                break
+            pending.append((index, path, pool.submit(source.extract, path)))
+        maximum_depth = max(maximum_depth, len(pending))
+        log(f"  extraction queue: workers={window}, depth={len(pending)}")
+
+        while pending:
+            index, path, future = pending.popleft()
+            result = future.result()
+            del future
+            yield index, path, result
+            del result
+            try:
+                next_index, next_path = next(paths)
+            except StopIteration:
+                continue
+            pending.append(
+                (next_index, next_path, pool.submit(source.extract, next_path))
+            )
+            maximum_depth = max(maximum_depth, len(pending))
+
+    log(f"  extraction queue max depth: {maximum_depth}")
+
+
+def run_source(
+    source,
+    reconciliation,
+    model,
+    device,
+    embed_batch,
+    store,
+    dry_run=False,
+):
+    """Run one source and return its explicit reconciliation outcome."""
+    log(f"\n{source.label}")
+    if source.state != "available":
+        return SourceRunResult(
+            source.source_id,
+            source.state,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            source.detail,
+        )
+    if not source.files:
+        if source.excluded_files:
+            detail = f"{source.excluded_files} file(s) intentionally delegated to JSON"
+            return SourceRunResult(
+                source.source_id,
+                "completed",
+                source.excluded_files,
+                source.excluded_files,
+                0,
+                0,
+                0,
+                0,
+                0,
+                detail,
+            )
+        return SourceRunResult(
+            source.source_id,
+            "empty",
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            "source enumerated successfully but contained no files",
+        )
+
+    work_count = len(source.files)
+    file_count = work_count + source.excluded_files
+    total = new = updated = failed = empty = 0
+    succeeded = source.excluded_files
+    for index, path, extraction in _bounded_extractions(source):
+        ids, docs, metadatas, error = extraction
+        file_id = source.file_key(path)
+        if error:
+            failed += 1
+            log(
+                f"  [{index}/{work_count}] SKIP {path.name}: "
+                f"{error.split(':', 1)[-1].strip()}"
+            )
+            preserve_existing(source.source_id, file_id, reconciliation)
+            del ids, docs, metadatas, extraction
+            continue
+        if not docs:
+            empty += 1
+            log(
+                f"  [{index}/{work_count}] PRESERVE {path.name}: "
+                "extraction returned no chunks"
+            )
+            preserve_existing(source.source_id, file_id, reconciliation)
+            del ids, docs, metadatas, extraction
+            continue
+
+        metadatas = _owned_metadata(metadatas, source, file_id)
+        file_new, file_updated, file_total = index_file_chunks(
+            ids,
+            docs,
+            metadatas,
+            reconciliation,
+            model,
+            device,
+            embed_batch,
+            store,
+            dry_run=dry_run,
+        )
+        succeeded += 1
+        total += file_total
+        new += file_new
+        updated += file_updated
+        log(
+            f"  [{index}/{work_count}] {path.name}  "
+            f"({_index_status(file_new, file_updated, file_total)})"
+        )
+        del ids, docs, metadatas, extraction
+        gc.collect()
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
+    state = "completed" if failed == 0 and empty == 0 else "degraded"
+    detail = ""
+    if state == "degraded":
+        detail = f"{failed} failed file(s), {empty} unexpectedly empty file(s)"
+    log(
+        f"  {state}: {total} chunks ({new} embedded, {updated} metadata-updated; "
+        f"{failed} failed, {empty} empty)"
+    )
+    return SourceRunResult(
+        source.source_id,
+        state,
+        file_count,
+        succeeded,
+        failed,
+        empty,
+        total,
+        new,
+        updated,
+        detail,
+    )

@@ -77,7 +77,7 @@ def evaluate(golden, *, n=10, config=None, collection_name=None,
         config = load_config()
     model_name = config.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
     model = get_model(model_name)
-    store = open_store(config, collection_name)
+    store = open_store(config, collection_name, model=model)
     count = store.count()
     if count == 0:
         logger.warning("Collection %r is EMPTY — recall will be 0. Build an index first.",

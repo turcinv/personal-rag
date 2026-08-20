@@ -1,5 +1,7 @@
 # Jetson Orin Nano Super Setup
 
+> Routine sync + reindex procedure: [SOP-jetson-sync.md](SOP-jetson-sync.md).
+
 ## Hardware
 
 - **Device:** NVIDIA Jetson Orin Nano Super
@@ -85,12 +87,13 @@ are pruned automatically — no need to wipe the `chroma` volume.
 > deleted. Combined with incremental pruning, that is what emptied the collection on
 > 2026-07-15 (172,557 chunks → 0).
 >
-> `indexer.main()` now raises `RuntimeError` and prunes nothing when **every** source
-> reports 0 files while the index holds chunks, so that exact failure can no longer
-> wipe anything. It does **not** protect a *partially* broken mount: if the vault
-> mounts but `RAG_JSON_PATH` doesn't, the book/resource chunks look legitimately
-> deleted and will be pruned. Verify the per-source counts in the startup log, and
-> if in doubt check what Compose actually resolved:
+> `indexer.main()` now reconciles each source only after that source completed
+> cleanly. Missing, unreadable, disabled, degraded, and unexpectedly empty sources
+> preserve their owned chunks while healthy sources continue independently. It also
+> raises `RuntimeError` when **every** source reports 0 files while the index holds
+> chunks. Verify the per-source census, and never use `--allow-empty-source-prune`
+> or `--allow-large-prune` to bypass an unexplained mount problem. Check Compose's
+> resolved mounts with:
 >
 > ```bash
 > docker compose -f docker-compose.jetson.yml config | grep -A2 volumes
@@ -106,7 +109,11 @@ With 8 GB unified RAM shared between CPU and GPU, keep these config values:
 | `markdown_workers` | `1` | Sequential MD extraction; avoids parallel RAM spikes |
 | `pdf_workers` | `1` | Sequential PDF extraction |
 
-The streaming indexer never accumulates all chunks globally — peak RAM is bounded to one file's chunks at a time.
+The indexer pages existing metadata into a temporary on-disk SQLite reconciliation
+catalog and submits no more extraction futures than the configured worker count. It
+never retains a corpus-sized metadata dictionary, ID set, or deletion list in Python.
+With the Jetson settings above, peak extraction payload is one file plus one embedding
+batch; the catalog is removed after planning/deletion completes.
 
 **If you also run the API server**, budget for it separately: `rag-serve` holds the
 embedder (~90 MB) resident for the life of the process, plus the cross-encoder

@@ -51,7 +51,7 @@ def test_personal_profile_loads_expected_values(monkeypatch):
 
     assert cfg["collection_name"] == "obsidian_markdown"
     assert cfg["embedding_model"] == MINILM
-    assert cfg["index_path"] == "./chroma_db"
+    assert cfg["index_path"] == str((REPO_ROOT / "chroma_db").resolve())
     assert cfg["embedding_batch_size"] == 16
     assert cfg["store"] == "chroma"
     assert cfg["pdf_sources"]
@@ -65,7 +65,7 @@ def test_logmanager_profile_loads_expected_values(monkeypatch):
     cfg = load_config()
 
     assert cfg["collection_name"] == "wiki_lm"
-    assert cfg["index_path"] == "./chroma_db_wiki"
+    assert cfg["index_path"] == str((REPO_ROOT / "chroma_db_wiki").resolve())
     assert cfg["embedding_batch_size"] == 64
     assert cfg["markdown_workers"] > 1
     assert cfg["store"] == "chroma"
@@ -108,6 +108,7 @@ def test_profiles_carry_expected_rerank_default(monkeypatch):
 
 import chromadb
 
+from rag.provenance import IndexProvenance, IndexState
 from rag.store.chroma_store import ChromaStore
 from rag.store import get_store, list_collection_names, drop_collection
 
@@ -130,6 +131,14 @@ def _store(name):
     return store
 
 
+def _metadata(store):
+    return dict(store.iter_metadata(page_size=2))
+
+
+def _ids(store):
+    return {chunk_id for chunk_id, _metadata_value in store.iter_metadata(page_size=2)}
+
+
 def test_chroma_store_name_property():
     store = ChromaStore(tempfile.mkdtemp(), "before-ensure")
     assert store.name == "before-ensure"   # pre-creation: falls back to the ctor arg
@@ -147,8 +156,8 @@ def test_chroma_store_ensure_upsert_count_existing_ids_snapshot():
     store.upsert(ids, embeddings, docs, metas)
 
     assert store.count() == 2
-    assert store.existing_ids() == {"a", "b"}
-    assert store.snapshot() == {"a": {"path": "p1"}, "b": {"path": "p2"}}
+    assert _ids(store) == {"a", "b"}
+    assert _metadata(store) == {"a": {"path": "p1"}, "b": {"path": "p2"}}
 
 
 def test_chroma_store_upsert_query_matches_direct_chromadb_path():
@@ -210,6 +219,24 @@ def test_chroma_store_query_honors_where_filter():
     assert all(h["metadata"]["domain"] == "X" for h in hits)
 
 
+def test_chroma_store_compiles_retrieval_filter_dto_internally():
+    """The store accepts a backend-neutral RetrievalFilter and compiles the
+    Chroma where-dict itself — the caller never constructs $eq/$and."""
+    from rag.retrieval import RetrievalFilter
+
+    store = _store("parity-dto-where")
+    store.upsert(
+        ["a", "b", "c"],
+        [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
+        ["doc a", "doc b", "doc c"],
+        [{"domain": "X"}, {"domain": "Y"}, {"domain": "X"}],
+    )
+    hits = store.query(
+        [1.0, 0.0, 0.0, 0.0], 5, where=RetrievalFilter.create(domain="X")
+    )
+    assert {h["document"] for h in hits} == {"doc a", "doc c"}
+
+
 def test_chroma_store_iter_records_yields_id_document_metadata():
     """iter_records() is the full-fidelity read (id + document + metadata) the
     lexical-index builder consumes — snapshot() carries metadata only."""
@@ -252,7 +279,7 @@ def test_chroma_store_existing_ids_returns_upserted_ids():
         docs=["d1", "d2", "d3"],
         metas=[{"path": "p1"}, {"path": "p2"}, {"path": "p3"}],
     )
-    assert store.existing_ids() == {"x1", "x2", "x3"}
+    assert _ids(store) == {"x1", "x2", "x3"}
 
 
 def test_chroma_store_update_metadata_refreshes_without_reembed_or_count_change():
@@ -270,7 +297,7 @@ def test_chroma_store_update_metadata_refreshes_without_reembed_or_count_change(
     store.update_metadata(ids, new_metas)
 
     # Metadata changed...
-    assert store.snapshot() == {"a": new_metas[0], "b": new_metas[1]}
+    assert _metadata(store) == {"a": new_metas[0], "b": new_metas[1]}
     # ...but count is stable and the embeddings were never touched (no re-embed).
     assert store.count() == 2
     after = store._coll().get(ids=ids, include=["embeddings"])
@@ -291,7 +318,7 @@ def test_chroma_store_delete_prunes_count_and_existing_ids():
     store.delete(["b"])
 
     assert store.count() == 2
-    assert store.existing_ids() == {"a", "c"}
+    assert _ids(store) == {"a", "c"}
 
 
 # ── 0-files anti-wipe guard, driven via the store signal ─────────────────────────
@@ -349,7 +376,7 @@ def test_indexer_main_raises_and_does_not_prune_when_zero_files_but_store_nonemp
     verify_store = ChromaStore(str(index_path), collection_name)
     verify_store.ensure(collection_name)
     assert verify_store.count() == 2
-    assert verify_store.existing_ids() == {"x1", "x2"}
+    assert _ids(verify_store) == {"x1", "x2"}
 
 
 # ── backend-catalog helpers (list / drop collections) ───────────────────────────
@@ -408,3 +435,25 @@ def test_chromadb_import_confined_to_chroma_store_module():
             offenders.append(str(path.relative_to(REPO_ROOT)))
 
     assert offenders == []
+
+
+def test_chroma_store_persists_index_state_in_collection_metadata():
+    store = _store("provenance")
+    provenance = IndexProvenance(
+        embedding_model="model",
+        embedding_revision="rev",
+        embedding_dimension=4,
+        normalized=True,
+        chunker_version="heading-paragraph-v1",
+        chunk_max_chars=1200,
+        chunk_overlap_chars=150,
+        metric="cosine",
+        corpus_profile="test",
+    )
+    state = IndexState.create(provenance)
+
+    assert store.read_index_state() is None
+    store.write_index_state(state.as_dict())
+
+    assert store.read_index_state() == state.as_dict()
+    assert store.read_index_state()["provenance"]["metric"] == "cosine"

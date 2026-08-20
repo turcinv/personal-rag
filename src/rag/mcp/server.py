@@ -55,7 +55,7 @@ async def lifespan(_server: MCPServer) -> AsyncIterator[AppContext]:
     model = rag_query.get_model(embedding_model)
 
     logger.info("MCP startup: opening store")
-    store = rag_query.open_store(config)
+    store = rag_query.open_store(config, model=model)
     logger.info("MCP startup complete")
 
     try:
@@ -100,6 +100,9 @@ def search(
     reranking. Use a small result count unless more context is necessary.
     """
     state = ctx.request_context.lifespan_context
+    # The MCP surface is intentionally query-only: no metadata filters and no
+    # hybrid toggle (host clients pass free-text questions). Filtering/hybrid are
+    # CLI/eval surfaces. rerank follows the active profile default.
     return rag_query.search(
         query,
         n_results=n_results,

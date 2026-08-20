@@ -18,8 +18,15 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from .. import query
-from ..generation import GenerationConfigError, get_generator
-from ..utils import load_config, setup_logging
+from ..generation import GenerationDisabledError, get_generator
+from ..utils import apply_offline_mode, load_config, setup_logging
+from .auth import (
+    JWT_AUDIENCE_ENV,
+    JWT_ISSUER_ENV,
+    JWT_SECRET_ENV,
+    validate_secret_strength,
+)
+from .concurrency import InferenceLimiter
 from .routes import answer as answer_routes
 from .routes import index as index_routes
 from .routes import query as query_routes
@@ -30,25 +37,61 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8000
 
 
+def _export_jwt_claims_env(config) -> None:
+    """Propagate configured JWT audience/issuer into the env require_jwt reads.
+
+    Keeps a single source of truth (the config's ``api`` block) while letting the
+    stateless ``require_jwt`` dependency enforce aud/iss without app-state access.
+    An explicit environment override is left untouched.
+    """
+    api = config.get("api") if isinstance(config.get("api"), dict) else {}
+    if api.get("jwt_audience") and not os.environ.get(JWT_AUDIENCE_ENV):
+        os.environ[JWT_AUDIENCE_ENV] = str(api["jwt_audience"])
+    if api.get("jwt_issuer") and not os.environ.get(JWT_ISSUER_ENV):
+        os.environ[JWT_ISSUER_ENV] = str(api["jwt_issuer"])
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load model + collection + reranker once, share via ``app.state.rag``."""
     config = load_config()
     setup_logging(config)
 
+    # Fail loudly at startup on a weak secret rather than accepting brute-forceable
+    # tokens per request. Also propagate configured aud/iss so require_jwt enforces
+    # them (it reads these env vars at request time).
+    validate_secret_strength(os.environ.get(JWT_SECRET_ENV))
+    _export_jwt_claims_env(config)
+
+    # Enforced offline mode (HF_HUB_OFFLINE etc.) must be set before any model
+    # load so a cold cache fails fast instead of reaching the network.
+    apply_offline_mode(config)
+
     embedding_model = config.get(
         "embedding_model", "sentence-transformers/all-MiniLM-L6-v2"
     )
     reranker_model = config.get("reranker_model", query.DEFAULT_RERANKER)
+    embedding_revision = config.get("embedding_revision") or None
 
     logger.info("API startup: loading embedding model %s", embedding_model)
-    model = query.get_model(embedding_model)
+    model = query.get_model(embedding_model, revision=embedding_revision)
 
     logger.info("API startup: opening store")
-    store = query.open_store(config)
+    store = query.open_store(config, model=model)
 
-    logger.info("API startup: loading reranker %s", reranker_model)
-    reranker = query.get_reranker(reranker_model)
+    # Load the cross-encoder only when the profile actually reranks by default.
+    # The personal profile sets rerank_default=False, so on the Jetson the
+    # reranker is never resident unless a request explicitly forces rerank=True
+    # (search() then lazily loads it). Saves memory and startup time.
+    reranker = None
+    if query.rerank_default(config):
+        logger.info("API startup: loading reranker %s", reranker_model)
+        reranker = query.get_reranker(reranker_model)
+    else:
+        logger.info(
+            "API startup: reranker %s not preloaded (rerank_default=False)",
+            reranker_model,
+        )
 
     count = store.count()
     if count == 0:
@@ -61,10 +104,11 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("API startup: collection %r holds %d chunks", store.name, count)
 
-    # Answer generation is optional. Build the generator once here; if it is not
-    # configured (no `generation` block or no API key), keep it None so /query
-    # still works and /answer returns 503. An unknown provider is a real config
-    # bug and is left to raise loudly.
+    # Answer generation is optional. Only a *disabled* state (no generation block
+    # or no API key) is swallowed to keep /query working while /answer returns
+    # 503. An *invalid* config (unknown provider, insecure base_url, missing
+    # model) raises GenerationConfigError and is NOT caught — the server fails
+    # loudly at startup rather than silently degrading.
     generator = None
     try:
         generator = get_generator(config)
@@ -73,8 +117,14 @@ async def lifespan(app: FastAPI):
             generator.provider,
             generator.model,
         )
-    except GenerationConfigError as exc:
+    except GenerationDisabledError as exc:
         logger.info("API startup: generation disabled — %s", exc)
+
+    inference_limiter = InferenceLimiter(
+        max_concurrency=int(config.get("api", {}).get("inference_concurrency", 1))
+        if isinstance(config.get("api"), dict)
+        else 1
+    )
 
     app.state.rag = {
         "config": config,
@@ -84,6 +134,7 @@ async def lifespan(app: FastAPI):
         "generator": generator,
         "embedding_model": embedding_model,
         "reranker_model": reranker_model,
+        "inference_limiter": inference_limiter,
     }
 
     logger.info("API startup complete.")
@@ -104,11 +155,18 @@ app.include_router(index_routes.router)
 
 
 def run() -> None:
-    """``rag-serve`` entry point: start uvicorn on RAG_API_HOST:RAG_API_PORT."""
+    """``rag-serve`` entry point. Host/port precedence: env > config.api > default."""
     import uvicorn
 
-    host = os.environ.get("RAG_API_HOST", DEFAULT_HOST)
-    port = int(os.environ.get("RAG_API_PORT", DEFAULT_PORT))
+    api = {}
+    try:
+        cfg = load_config()
+        api = cfg.get("api") if isinstance(cfg.get("api"), dict) else {}
+    except Exception as exc:  # pragma: no cover - config errors surface in lifespan
+        logger.warning("Could not read api host/port from config: %s", exc)
+
+    host = os.environ.get("RAG_API_HOST") or api.get("host") or DEFAULT_HOST
+    port = int(os.environ.get("RAG_API_PORT") or api.get("port") or DEFAULT_PORT)
     uvicorn.run(app, host=host, port=port)
 
 

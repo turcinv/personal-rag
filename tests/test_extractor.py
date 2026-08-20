@@ -285,3 +285,36 @@ def test_build_sqlite_creates_tables(tmp_path):
     assert "documents" in tables
     assert "tags" in tables
     assert "doc_tags" in tables
+
+
+def test_build_sqlite_failure_preserves_existing_destination(tmp_path):
+    from extractor.build_sqlite import build_database
+
+    destination = tmp_path / "resources.db"
+    sentinel = b"previous-good-database"
+    destination.write_bytes(sentinel)
+    malformed = tmp_path / "malformed.jsonl"
+    malformed.write_text('{"id":', encoding="utf-8")
+
+    with pytest.raises(json.JSONDecodeError):
+        build_database([malformed], destination)
+
+    assert destination.read_bytes() == sentinel
+    assert not list(tmp_path.glob(".resources.db.*.tmp*"))
+
+
+def test_build_sqlite_rejects_compatibility_symlink(tmp_path):
+    from extractor.build_sqlite import build_database
+
+    target = tmp_path / "generation.db"
+    target.write_bytes(b"unchanged")
+    destination = tmp_path / "resources.db"
+    destination.symlink_to(target.name)
+    source = tmp_path / "empty.jsonl"
+    source.write_text("", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="compatibility symlink"):
+        build_database([source], destination)
+
+    assert destination.is_symlink()
+    assert target.read_bytes() == b"unchanged"

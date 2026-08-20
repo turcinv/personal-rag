@@ -29,7 +29,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = [
+    "build==1.5.0",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "ruff==0.15.20",
+]
 
 [project.scripts]
 rag-index = "rag.indexer:main"
@@ -48,9 +53,35 @@ rag-build-vault-index = "extractor.build_vault_index:main"
 rag-dup-detect = "extractor.dup_detect:main"
 rag-link-mocs = "extractor.link_mocs:main"
 rag-search = "extractor.search:main"
+rag-stats = "rag.stats:main"
+rag-config = "rag.config_cli:main"
+rag-pipeline = "extractor.pipeline:main"
+rag-sync-generation = "extractor.sync:main"
+rag-backup = "rag.backup:main"
 rag-serve = "rag.api.app:run"
 rag-token = "rag.api.token:main"
 rag-mcp = "rag.mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["rag", "extractor"]
+
+[tool.coverage.report]
+fail_under = 40
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+# Start with correctness-only rules so linting is a useful gate without a
+# repository-wide formatting rewrite. Broaden this set incrementally.
+select = ["E9", "F63", "F7", "F82"]

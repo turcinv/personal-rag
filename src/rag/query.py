@@ -13,7 +13,9 @@ import logging
 
 from .utils import load_config, setup_logging  # sets telemetry env var and patches posthog before chromadb loads
 
-from .store import get_store
+from .provenance import ensure_compatible, expected_provenance, read_index_state
+from .retrieval import RetrievalFilter
+from .store import compile_where, get_store
 from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger("rag")
@@ -43,38 +45,41 @@ def rerank_default(config: dict) -> bool:
 
 
 def build_where(domain=None, type_=None, source=None, confidence=None, subdomain=None, status=None):
-    """Build a ChromaDB metadata filter from optional field constraints.
+    """Compile optional field constraints into a Chroma where-dict.
 
-    ``status`` is a single scalar in chunk metadata, so it uses a native ``$eq``
-    clause here. ``tags`` is deliberately NOT handled here — tags are stored as a
-    comma-joined string (Chroma 0.6.3 has weak array support), so tag filtering is
-    a post-filter over retrieved records in :func:`search`, never a where clause.
+    LEGACY/compat shim: shipped callers now build a backend-neutral
+    :class:`~rag.retrieval.RetrievalFilter` and let the store compile it. This
+    function is kept for backward compatibility and delegates to the single
+    Chroma-syntax compiler (``rag.store.compile_where``) so the ``$eq``/``$and``
+    shape is defined in exactly one place. ``tags`` are never a where clause —
+    they are post-filtered in :func:`search`.
     """
-    filters = []
-    if domain:
-        filters.append({"domain": {"$eq": domain}})
-    if subdomain:
-        filters.append({"subdomain": {"$eq": subdomain}})
-    if type_:
-        filters.append({"type": {"$eq": type_}})
-    if source:
-        filters.append({"source": {"$eq": source}})
-    if confidence:
-        filters.append({"confidence": {"$eq": confidence}})
-    if status:
-        filters.append({"status": {"$eq": status}})
-    if not filters:
-        return None
-    if len(filters) == 1:
-        return filters[0]
-    return {"$and": filters}
+    return compile_where(
+        RetrievalFilter.create(
+            domain=domain,
+            subdomain=subdomain,
+            type=type_,
+            source=source,
+            confidence=confidence,
+            status=status,
+        )
+    )
 
 
-def get_model(model_name):
-    """Return a cached SentenceTransformer for ``model_name``."""
-    if model_name not in _MODEL_CACHE:
-        _MODEL_CACHE[model_name] = SentenceTransformer(model_name)
-    return _MODEL_CACHE[model_name]
+def get_model(model_name, revision=None):
+    """Return a cached SentenceTransformer for ``model_name`` (optionally pinned).
+
+    ``revision`` pins the exact model snapshot (a HF commit/tag) so an offline or
+    reproducible deployment always loads the same weights; it participates in the
+    cache key so two revisions never collide.
+    """
+    key = (model_name, revision)
+    if key not in _MODEL_CACHE:
+        if revision:
+            _MODEL_CACHE[key] = SentenceTransformer(model_name, revision=revision)
+        else:
+            _MODEL_CACHE[key] = SentenceTransformer(model_name)
+    return _MODEL_CACHE[key]
 
 
 def get_reranker(model_name):
@@ -86,20 +91,23 @@ def get_reranker(model_name):
     return _RERANKER_CACHE[model_name]
 
 
-def open_store(config, collection_name=None):
-    """Open the configured ``RetrievalStore`` (or the collection-name override).
-
-    Does not eagerly create anything — for Chroma this defers to
-    ``get_collection`` on first use, so querying a collection that has never
-    been indexed still raises, exactly like the historical ``open_collection``.
-    """
-    return get_store(config, collection_name)
+def open_store(config, collection_name=None, model=None):
+    """Open a store and validate it against the active embedding profile."""
+    store = get_store(config, collection_name)
+    if model is not None:
+        name = collection_name or config.get("collection_name", "obsidian_markdown")
+        ensure_compatible(
+            store,
+            expected_provenance(config, model=model, collection_name=name),
+        )
+    return store
 
 
 def search(
     query,
     n_results=8,
     *,
+    retrieval_filter=None,
     filters=None,
     tags=None,
     config=None,
@@ -115,6 +123,13 @@ def search(
     ``document`` (str), ``metadata`` (dict), ``distance`` (float, dense L2/cosine
     distance) and ``rank`` (1-based). ``filters`` is a prebuilt ChromaDB
     where-dict (see :func:`build_where`).
+
+    ``retrieval_filter`` is the backend-neutral
+    :class:`~rag.retrieval.RetrievalFilter` shipped callers build; the store
+    compiles it to its own dialect and its ``tags`` drive the post-filter.
+    ``filters`` (a raw where-dict) and ``tags`` (a list) are the legacy
+    equivalents kept for the retrieval-algorithm tests and pre-DTO callers;
+    ``retrieval_filter`` takes precedence when given.
 
     ``model`` / ``store`` may be passed in to avoid reloading them between
     calls; otherwise they are resolved from ``config`` (loaded if omitted).
@@ -133,13 +148,23 @@ def search(
     keep; filtering runs before rerank/trim, so a very rare tag may still
     under-return within that pool (best-effort).
     """
+    # Resolve the active filter + tag list from either the neutral DTO
+    # (preferred) or the legacy filters/tags kwargs. An empty DTO collapses to
+    # None so the store/lexical widening stays byte-identical to "no filter".
+    if retrieval_filter is not None:
+        where = None if retrieval_filter.is_empty else retrieval_filter
+        tag_list = list(retrieval_filter.tags)
+    else:
+        where = filters
+        tag_list = tags
+
     if config is None:
         config = load_config()
     model_name = config.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
     if model is None:
-        model = get_model(model_name)
+        model = get_model(model_name, revision=config.get("embedding_revision") or None)
     if store is None:
-        store = open_store(config, collection_name)
+        store = open_store(config, collection_name, model=model)
 
     # Config-driven query prefix (e.g. bge's retrieval instruction). Empty for
     # models that need none (MiniLM, gte); the passage/index side never prefixes.
@@ -154,7 +179,7 @@ def search(
     # Tags are post-filtered (not a native where clause), so widen the dense pool
     # to give the post-filter enough candidates to keep. Best-effort: a very rare
     # tag may still under-return within this pool.
-    if tags:
+    if tag_list:
         fetch_k = max(fetch_k, int(config.get("tag_fetch_k", 200)))
     # Hybrid widens BOTH the dense and lexical pools independent of n_results, so
     # RRF has depth to rescue a dense miss with a lexical hit (and vice-versa).
@@ -164,7 +189,7 @@ def search(
     # Thread the raw query text + hybrid flag down to the store. Chroma ignores
     # both (pure vector search); a backend with native BM25+k-NN fusion uses
     # them. `text` is the raw query — never `embed_input` (the prefixed variant).
-    hits = store.query(query_embedding, fetch_k, filters, text=query, hybrid=hybrid)
+    hits = store.query(query_embedding, fetch_k, where, text=query, hybrid=hybrid)
 
     # Client-side BM25 fusion: only when hybrid is requested AND the store has no
     # native lexical channel (Chroma). A native-fusion store (supports_hybrid)
@@ -172,7 +197,15 @@ def search(
     # the dense-only path stays byte-identical.
     if hybrid and not getattr(store, "supports_hybrid", False):
         from .lexical import get_lexical, rrf_fuse  # lazy: only on the hybrid path
-        lex_hits = get_lexical(config, collection_name).query(query, fetch_k, where=filters)
+        state = read_index_state(store)
+        if state is None:
+            raise RuntimeError(
+                "Hybrid retrieval requires vector generation metadata; rebuild or "
+                "explicitly adopt index provenance, then run make build-lexical."
+            )
+        lex_hits = get_lexical(
+            config, collection_name, index_state=state
+        ).query(query, fetch_k, where=where)
         hits = rrf_fuse(
             hits, lex_hits,
             weights=config.get("hybrid_weights", (1.0, 1.0)),
@@ -189,8 +222,8 @@ def search(
     # every requested tag is an exact member of its tag set (case-insensitive) —
     # so "ci" must not match "ci-cd", and multiple tags are AND (subset test).
     # Records with no/empty tags metadata never raise and are dropped.
-    if tags:
-        want = {t.strip().lower() for t in tags if t and t.strip()}
+    if tag_list:
+        want = {t.strip().lower() for t in tag_list if t and t.strip()}
         if want:
             records = [
                 r for r in records
@@ -216,8 +249,16 @@ def search(
     else:
         records = records[:n_results]
 
-    logger.info("query=%r n=%d filter=%s tags=%s rerank=%s -> %d results",
-                query, n_results, filters, tags, rerank, len(records))
+    # Privacy: the raw query text is NOT logged by default (it fans out to a
+    # text file + SQLite). Set `log_queries: true` in config to log it verbatim
+    # for debugging; otherwise only its length is recorded.
+    if config.get("log_queries"):
+        logger.info("query=%r n=%d filter=%s tags=%s rerank=%s -> %d results",
+                    query, n_results, where, tag_list, rerank, len(records))
+    else:
+        logger.info("query=<redacted len=%d> n=%d filter=%s tags=%s rerank=%s -> %d results",
+                    len(query or ""), n_results, bool(where), bool(tag_list),
+                    rerank, len(records))
     return records
 
 
@@ -274,10 +315,17 @@ def main():
     # Neither flag given → fall back to the profile's rerank_default.
     rerank = args.rerank if args.rerank is not None else rerank_default(config)
 
-    where = build_where(args.domain, args.type_, args.source, args.confidence, args.subdomain,
-                        status=args.status)
-    records = search(query, args.n_results, filters=where, tags=args.tag, config=config,
-                     rerank=rerank, hybrid=args.hybrid)
+    retrieval_filter = RetrievalFilter.create(
+        domain=args.domain,
+        subdomain=args.subdomain,
+        type=args.type_,
+        source=args.source,
+        confidence=args.confidence,
+        status=args.status,
+        tags=args.tag,
+    )
+    records = search(query, args.n_results, retrieval_filter=retrieval_filter,
+                     config=config, rerank=rerank, hybrid=args.hybrid)
 
     if args.output_json:
         output = [
@@ -289,14 +337,14 @@ def main():
 
     print()
     print("Query: " + query)
-    if where or args.tag:
-        # `where` already carries status (via build_where); tags are a separate
-        # post-filter, so print them explicitly alongside the where-dict.
+    if not retrieval_filter.is_empty:
+        # Neutral, backend-agnostic display — the CLI never prints store syntax.
         parts = []
-        if where:
-            parts.append(json.dumps(where))
-        if args.tag:
-            parts.append("tags=" + json.dumps(args.tag))
+        scalars = retrieval_filter.scalar_constraints()
+        if scalars:
+            parts.append(", ".join(f"{name}={value}" for name, value in scalars))
+        if retrieval_filter.tags:
+            parts.append("tags=" + json.dumps(list(retrieval_filter.tags)))
         print("Filter: " + "  ".join(parts))
     print()
 

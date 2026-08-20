@@ -8,10 +8,13 @@ import pytest
 
 from rag.lexical import (
     LexicalIndex,
+    LexicalIndexStaleError,
     _matches_where,
     _to_match_query,
+    get_lexical,
     rrf_fuse,
 )
+from rag.provenance import IndexProvenance, IndexState
 
 
 # ── FTS5 MATCH sanitization ──────────────────────────────────────────────────
@@ -105,6 +108,19 @@ def test_query_where_post_filter_drops_wrong_domain(tmp_path):
     assert [h["metadata"]["title"] for h in hits] == ["A"]
 
 
+def test_query_where_accepts_retrieval_filter_dto(tmp_path):
+    from rag.retrieval import RetrievalFilter
+
+    idx = _build(tmp_path, [
+        ("a", "kubernetes networking", {"title": "A", "domain": "DevOps"}),
+        ("b", "kubernetes networking", {"title": "B", "domain": "Security"}),
+    ])
+    hits = idx.query(
+        "kubernetes networking", 10, where=RetrievalFilter.create(domain="DevOps")
+    )
+    assert [h["metadata"]["title"] for h in hits] == ["A"]
+
+
 # ── _matches_where interpreter ───────────────────────────────────────────────
 
 
@@ -180,3 +196,133 @@ def test_rrf_tiebreak_is_total_and_deterministic():
     assert order.index("b") < order.index("d")
     # Same inputs, run again → identical output (no hidden nondeterminism).
     assert order == _docs(rrf_fuse(DENSE, LEXICAL, weights=(1.0, 1.0), k_rrf=60))
+
+
+def _index_state():
+    return IndexState.create(
+        IndexProvenance(
+            embedding_model="model",
+            embedding_revision="",
+            embedding_dimension=8,
+            normalized=True,
+            chunker_version="heading-paragraph-v1",
+            chunk_max_chars=1200,
+            chunk_overlap_chars=150,
+            metric="cosine",
+            corpus_profile="test",
+        )
+    )
+
+
+def test_lexical_sidecar_requires_matching_vector_generation(tmp_path):
+    path = tmp_path / "fresh.db"
+    state = _index_state()
+    LexicalIndex.build(
+        iter([("a", "kubernetes", {"title": "A"})]),
+        path,
+        index_state=state,
+    )
+    config = {"lexical_path": str(path)}
+
+    assert get_lexical(config, index_state=state).query("kubernetes", 1)
+
+    stale_state = IndexState.create(state.provenance)
+    with pytest.raises(LexicalIndexStaleError, match="stale"):
+        get_lexical(config, index_state=stale_state)
+
+
+def test_legacy_lexical_sidecar_cannot_participate_in_hybrid(tmp_path):
+    path = tmp_path / "legacy.db"
+    LexicalIndex.build(iter([("a", "kubernetes", {})]), path)
+
+    with pytest.raises(LexicalIndexStaleError, match="stale"):
+        get_lexical({"lexical_path": str(path)}, index_state=_index_state())
+
+
+def test_failed_atomic_rebuild_preserves_previous_lexical_index(tmp_path):
+    path = tmp_path / "atomic.db"
+    state = _index_state()
+    LexicalIndex.build(
+        iter([("old", "previous searchable content", {"title": "old"})]),
+        path,
+        index_state=state,
+    )
+
+    def broken_records():
+        yield "new", "replacement content", {"title": "new"}
+        raise RuntimeError("simulated extraction failure")
+
+    with pytest.raises(RuntimeError, match="simulated extraction failure"):
+        LexicalIndex.build(broken_records(), path, index_state=state)
+
+    reopened = LexicalIndex(path)
+    assert [hit["metadata"]["title"] for hit in reopened.query("previous", 5)] == [
+        "old"
+    ]
+    reopened.close()
+    assert not list(tmp_path.glob(".atomic.db.*.tmp*"))
+
+
+def test_atomic_replacement_refreshes_cached_reader(tmp_path):
+    path = tmp_path / "cached.db"
+    state = _index_state()
+    LexicalIndex.build(
+        iter([("old", "old-only token", {"title": "old"})]),
+        path,
+        index_state=state,
+    )
+    config = {"lexical_path": str(path)}
+    first = get_lexical(config, index_state=state)
+    assert first.query("old", 1)
+
+    LexicalIndex.build(
+        iter([("new", "new-only token", {"title": "new"})]),
+        path,
+        index_state=state,
+    )
+    second = get_lexical(config, index_state=state)
+
+    assert first._conn is None
+    assert second is not first
+    assert [hit["metadata"]["title"] for hit in second.query("new", 1)] == ["new"]
+    assert second.query("old", 1) == []
+
+
+def test_vector_state_change_aborts_lexical_publication(tmp_path):
+    path = tmp_path / "state-race.db"
+    state = _index_state()
+    LexicalIndex.build(
+        iter([("old", "stable content", {})]), path, index_state=state
+    )
+    changed = IndexState.create(state.provenance)
+
+    with pytest.raises(RuntimeError, match="changed while lexical"):
+        LexicalIndex.build(
+            iter([("new", "unpublished content", {})]),
+            path,
+            index_state=state,
+            state_reader=lambda: changed,
+        )
+
+    reopened = LexicalIndex(path)
+    assert reopened.query("stable", 1)
+    assert reopened.query("unpublished", 1) == []
+    reopened.close()
+
+
+def test_expected_lexical_count_is_validated_before_replacement(tmp_path):
+    path = tmp_path / "count.db"
+    state = _index_state()
+    LexicalIndex.build(iter([("old", "old", {})]), path, index_state=state)
+
+    with pytest.raises(RuntimeError, match="row count mismatch"):
+        LexicalIndex.build(
+            iter([("new", "new", {})]),
+            path,
+            index_state=state,
+            expected_count=2,
+        )
+
+    reopened = LexicalIndex(path)
+    assert reopened.query("old", 1)
+    reopened.close()

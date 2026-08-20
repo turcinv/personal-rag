@@ -92,7 +92,16 @@ make index
 # or: .venv/bin/rag-index
 ```
 
-Indexing is fully streaming — each file is extracted, embedded, and upserted to ChromaDB before the next file starts. No global chunk accumulation in RAM. Uses GPU if CUDA is available, otherwise CPU.
+Indexing keeps only a bounded worker window of extracted files plus small embedding
+batches in RAM; existing metadata is reconciled through a temporary on-disk SQLite
+catalog. Uses GPU if CUDA is available, otherwise CPU.
+
+Each collection carries enforced provenance (model/revision/dimension, normalization,
+chunker settings, metric, corpus, schema) and a generation ID. Incompatible indexing
+or serving fails before vectors can be mixed. Prefer a new collection for migrations;
+`--adopt-index-provenance` exists only for a legacy collection whose construction was
+independently verified. Rebuild `make build-lexical` after any changed index generation;
+hybrid retrieval rejects stale lexical data.
 
 Expect ~5–10 minutes for a large vault + book library on first run.
 
@@ -135,26 +144,27 @@ Pass `--help` to see all options.
 - Semantic distance score (lower = more relevant)
 - Chunk text preview
 
-### Tests
+### Development and tests
 
-Two separate suites — the offline unit suite is what the CI badge above measures:
-
-```bash
-make test-unit    # offline pytest suite — no network, no real model, no index needed
-```
+Install the runtime plus the pinned contributor toolchain, then run the complete local quality gate:
 
 ```bash
-make test         # retrieval smoke test — needs a populated index
-make test K=devops    # filter by keyword
+make install-dev
+make check
 ```
 
-`make test-unit` covers chunking, extractors, the incremental indexing engine, the store seam, config profiles, the `search()` seam, the eval harness, the generation layer, and the HTTP API. Run `make test` after every reindex to catch quality regressions; results below distance 0.75 are marked OK, above are marked WEAK.
-
-**Note:** `pytest` is not in the lockfile, so a venv built by `make install` needs it added:
+The individual checks are also available:
 
 ```bash
-uv pip install pytest
+make test-unit       # offline pytest suite — no network, model, or index needed
+make test-coverage   # same suite with branch coverage and the current ratchet
+make lint            # Ruff correctness checks
+make package-check   # build a wheel and smoke-test representative entry points
+make test            # informational retrieval report; needs a populated index
+make test K=devops   # filter the retrieval report by keyword
 ```
+
+`make check` is the contributor gate used by CI. CI runs it on Python 3.10 (the Jetson production version) and Python 3.12 (the common macOS development version). The retrieval report is intentionally separate because it needs the private populated corpus; use `make eval` for labelled recall/MRR comparisons.
 
 ### Measure retrieval quality
 
@@ -176,6 +186,8 @@ make test K=devops                    # retrieval smoke test
 make eval                             # recall@k / MRR
 make serve                            # HTTP backend on 0.0.0.0:8000
 make pipeline-status                   # extractor pipeline pre-flight
+make backup DEST=backups/2026-08-20   # quiesced backup of index + sidecars
+make restore-drill DIR=backups/...    # restore to a temp path and verify
 
 make build          # Docker x86
 make docker-index
@@ -188,7 +200,19 @@ make jetson-query Q="bioprocessing workflows"
 make jetson-serve
 ```
 
-The extractor pipeline has its own targets (`make extract`, `enrich`, `build-index`, `build-notes`, `build-sqlite`, `build-books-index`, `link-mocs`, `dup-detect`, `search`), each with `docker-` and `jetson-` variants. See CLAUDE.md for the order to run them in.
+The extractor pipeline has a config-driven coordinator:
+
+```bash
+make pipeline ARGS="--dry-run"          # resolved paths, status, commands
+make pipeline                            # dependency-ordered full artifact build
+make pipeline ARGS="--stage build-sqlite"  # selected stage plus dependencies
+```
+
+The existing stage targets (`make extract`, `enrich`, `build-index`, `build-notes`,
+`build-sqlite`, `build-books-index`, `link-mocs`, `dup-detect`) remain compatibility
+aliases, but now delegate to `rag-pipeline` and use the same typed profile/env
+resolution as the application. Docker and Jetson wrappers delegate to the same
+coordinator instead of maintaining separate path argument lists.
 
 ## Docker
 
@@ -203,7 +227,9 @@ cp .env.example .env
 # edit .env — set RAG_VAULT_PATH, RAG_PDF_BOOKS_PATH, RAG_PDF_RESOURCES_PATH, RAG_JSON_PATH
 ```
 
-> **Do not skip `RAG_JSON_PATH`.** Compose resolves unset mounts to the host's `/tmp`, so a missing variable silently mounts an empty directory and the indexer sees zero files from that source. A missing `RAG_VAULT_PATH`/`RAG_JSON_PATH` pair is what caused a full index wipe on 2026-07-15. The indexer now refuses to prune when *every* source reports 0 files, but it cannot detect a *partially* broken mount — verify the startup log reports non-zero counts per source.
+> **Do not skip `RAG_JSON_PATH`.** Compose resolves unset mounts to the host's `/tmp`, so a missing variable silently mounts an empty directory. The 2026-07-15 incident predated source-scoped reconciliation. The indexer now preserves chunks owned by missing, unreadable, degraded, or unexpectedly empty sources while healthy sources reconcile independently; an all-sources-zero `RuntimeError` remains a second backstop. Still verify every startup census and never override an unexplained mount problem with prune flags.
+>
+> Preview a run with `.venv/bin/rag-index --dry-run`. It performs extraction and reports insert/update/delete decisions without embedding or writing the store or manifest. Completed runs write atomic per-source manifests beside the index (or under `manifest_path`). Deletions above `prune_max_fraction` (default 25%) or `prune_max_chunks` (default 10,000) are blocked until reviewed and rerun with `--allow-large-prune`; truly intentional empty-source deletion additionally requires `--allow-empty-source-prune`. Legacy chunks without ownership metadata are preserved until successfully seen again.
 
 Running the extractor pipeline in Docker needs a further three host-side variables (`RAG_OUTPUT_PATH`, `RAG_CATALOG_PATH`, `RAG_MOCS_PATH`); see the comments in `.env.example`.
 
@@ -301,7 +327,7 @@ curl -s -X POST http://gpu-01:8000/query \
   -d '{"query": "How does K3s handle secrets?", "n_results": 5, "filters": {"domain": "DevOps"}}'
 ```
 
-`GET /health` is unauthenticated; `GET /status`, `POST /query`, `POST /answer`, `POST /index`, and `GET /index/jobs/{id}` require the token. See [docs/api.md](docs/api.md) for every endpoint, request/response schemas, the JWT flow, and a copy-paste Python client for the bots.
+`GET /health` and `GET /ready` are unauthenticated (liveness / readiness — `/ready` is 503 until the model is loaded and the store is populated); `GET /status`, `POST /query`, `POST /answer`, `POST /index`, and `GET /index/jobs/{id}` require the token. Tokens can be scoped (`rag-token --scope query`) to least-privilege a credential. See [docs/api.md](docs/api.md) for every endpoint, request/response schemas, the JWT flow, and a copy-paste Python client for the bots, and [docs/security.md](docs/security.md) for the overall egress/auth/privacy posture.
 
 ### Grounded answers (optional)
 
@@ -324,7 +350,7 @@ With no `generation` block or no key exported, `/answer` returns 503 and `/query
 
 ```
 Obsidian vault (.md)  ─┐
-PDF books & resources  ─┼─► Per-file text extraction (ThreadPoolExecutor, md_workers / pdf_workers)
+PDF books & resources  ─┼─► Per-file text extraction (bounded queue: at most md_workers / pdf_workers futures)
 Pre-extracted JSON     ─┘         │
                                    │  one file at a time
                                    ▼

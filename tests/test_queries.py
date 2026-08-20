@@ -1,7 +1,14 @@
 """
-Retrieval smoke tests for personal-rag.
+Retrieval smoke report for personal-rag (INFORMATIONAL, not a gate).
 
-Run after every reindex to verify query quality across all vault domains.
+Run after a reindex to eyeball query quality across every vault domain. It
+prints the top results per query and a strong/weak summary; it does NOT fail the
+build on a weak distance. The threshold-based *quality gate* is the recall@k/MRR
+eval harness (`make eval`), which compares against tests/eval/baseline.json.
+
+This report goes through the single retrieval seam — ``rag.query.search()`` —
+exactly like the CLI/API/eval, so it exercises the real path (provenance-checked
+store open, filters, rerank default) rather than a second ad-hoc query.
 
 Usage:
     make test                   # run all queries
@@ -16,7 +23,7 @@ import sys
 
 from rag.utils import load_config  # sets telemetry env var and patches posthog before chromadb loads
 
-from rag.store import get_store
+from rag import query as rag_query
 from sentence_transformers import SentenceTransformer
 
 # ---------------------------------------------------------------------------
@@ -59,7 +66,9 @@ DISTANCE_WARN = 0.75
 def run_tests(filter_keyword: str = ""):
     config = load_config()
     model = SentenceTransformer(config["embedding_model"])
-    store = get_store(config)
+    # Open through the retrieval seam's helper so provenance is validated exactly
+    # like the CLI/API do; then reuse it across every query.
+    store = rag_query.open_store(config, model=model)
 
     queries = TEST_QUERIES
     if filter_keyword:
@@ -74,12 +83,13 @@ def run_tests(filter_keyword: str = ""):
     passed = warned = 0
 
     for domain, query in queries:
-        embedding = model.encode([query], normalize_embeddings=True).tolist()[0]
-        records   = store.query(embedding, N_RESULTS)
+        records   = rag_query.search(
+            query, N_RESULTS, config=config, model=model, store=store
+        )
         docs      = [r["document"] for r in records]
         metas     = [r["metadata"] for r in records]
         distances = [r["distance"] for r in records]
-        best      = distances[0] if distances else 1.0
+        best      = distances[0] if distances and distances[0] is not None else 1.0
 
         status = "OK" if best < DISTANCE_WARN else "WEAK"
         warned += status == "WEAK"

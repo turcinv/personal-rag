@@ -15,6 +15,7 @@ from .base import (
     AnswerResult,
     GenerationError,
     build_prompt,
+    validate_egress_url,
 )
 
 logger = logging.getLogger("rag")
@@ -50,7 +51,7 @@ class AnthropicGenerator:
         self._max_tokens = max_tokens
         self._temperature = temperature
         self._timeout = timeout
-        self._base_url = base_url.rstrip("/")
+        self._base_url = validate_egress_url(base_url)
         self._system_prompt = system_prompt
         self._client = client
 
@@ -96,10 +97,14 @@ class AnthropicGenerator:
             raise GenerationError(f"Anthropic request failed: {exc}") from exc
 
         if resp.status_code >= 400:
-            # Surface the provider's error body (trimmed) but never the api key.
-            raise GenerationError(
-                f"Anthropic API returned {resp.status_code}: {resp.text[:500]}"
+            # Log the provider's error body server-side for debugging, but NEVER
+            # include it in the raised error — the /answer route surfaces the
+            # exception message to the client, and a provider body can echo the
+            # prompt or leak provider-side detail. Only the status code escapes.
+            logger.warning(
+                "Anthropic API error %s: %s", resp.status_code, resp.text[:500]
             )
+            raise GenerationError(f"Anthropic API returned {resp.status_code}")
 
         try:
             body = resp.json()

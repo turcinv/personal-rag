@@ -1,104 +1,240 @@
-"""Source registry.
+"""Source registry for the shared incremental indexing engine."""
 
-Each indexing source (Markdown vault, PDF dirs, JSON dirs) is described by a
-``Source`` whose ``extract`` callable returns the common
-``(ids, documents, metadatas, error)`` contract. ``iter_sources()`` turns a
-config into that uniform stream so the indexing engine can process them all with
-one loop. Adding a new source type = a new module here + a block in
-``iter_sources`` + a ``config.yaml`` entry; ``indexer.main()`` is untouched.
-"""
-
-from collections import namedtuple
+import os
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Callable, Dict, List, Optional, Sequence, Set
 
-from .json_doc import extract_json_doc
+from extractor.artifacts import validate_generation
+
+from .json_doc import extract_json_doc, load_indexable_json
 from .markdown import extract_md_file, should_exclude
 from .pdf import extract_pdf_file
 
-__all__ = ["Source", "iter_sources", "extract_md_file", "extract_pdf_file",
-           "extract_json_doc", "should_exclude"]
-
-# kind/label: for logging. files: list[Path]. workers: thread count.
-# extract(file) -> (ids, docs, metas, err). preserve_key(file) -> path string,
-# or None when a failed extraction can't be mapped back to its stored chunks.
-Source = namedtuple("Source", "kind label files workers extract preserve_key")
-
-
-def _dir_source(kind, src, glob, workers, make_extract, make_preserve):
-    """Build a Source for one configured directory entry (PDF / JSON)."""
-    d = Path(src["path"]).expanduser().resolve()
-    if not d.exists():
-        return Source(kind, f"{kind.upper()} source: path does not exist, skipped — {d}",
-                      [], workers, None, None)
-    files = sorted(d.glob(glob))
-    label = f"{kind.upper()} source [{src.get('type')}]" if src.get("type") else f"{kind.upper()} source"
-    return Source(kind, f"{label}: {len(files)} files — {d.name}", files, workers,
-                  make_extract(src), make_preserve)
+__all__ = [
+    "Source",
+    "iter_sources",
+    "extract_md_file",
+    "extract_pdf_file",
+    "extract_json_doc",
+    "should_exclude",
+]
 
 
-def _json_covered_filenames(config: dict) -> set:
-    """``file_name`` of every document available as pre-extracted JSON.
+@dataclass(frozen=True)
+class Source:
+    """One independently reconcilable indexing source."""
 
-    These JSONs carry full text + enriched metadata, so they are always
-    preferred over parsing the original file live; PDF sources then act as a
-    fallback for files the extraction pipeline has not covered yet.
-    """
-    import json as _json
+    source_id: str
+    kind: str
+    label: str
+    root: Path
+    files: Sequence[Path]
+    workers: int
+    extract: Optional[Callable]
+    file_key: Callable[[Path], str]
+    state: str = "available"
+    detail: str = ""
+    excluded_files: int = 0
 
-    covered = set()
-    for src in config.get("json_sources", []):
-        d = Path(src["path"]).expanduser().resolve()
-        if not d.exists():
+    @property
+    def prune_candidate(self) -> bool:
+        return self.state == "available" and bool(self.files or self.excluded_files)
+
+
+def _source_id(kind: str, source: dict, index: int) -> str:
+    return source.get("id") or f"{kind}:{source.get('type') or index}"
+
+
+def _path_state(path: Path, enabled: bool) -> tuple:
+    if not enabled:
+        return "disabled", "disabled by config"
+    if not path.exists():
+        return "missing", "path does not exist"
+    if not path.is_dir():
+        return "unreadable", "path is not a directory"
+    if not os.access(path, os.R_OK):
+        return "unreadable", "path is not readable"
+    return "available", ""
+
+
+def _dir_source(kind, source, index, glob, workers, make_extract, make_file_key):
+    root = Path(source["path"]).expanduser().resolve()
+    source_id = _source_id(kind, source, index)
+    state, detail = _path_state(root, bool(source.get("enabled", True)))
+    files = sorted(root.glob(glob)) if state == "available" else []
+    label = f"{kind.upper()} source [{source.get('type')}]" if source.get("type") else f"{kind.upper()} source"
+    if state != "available":
+        label = f"{label}: {state} — {root}"
+    else:
+        label = f"{label}: {len(files)} files — {root.name}"
+    return Source(
+        source_id=source_id,
+        kind=kind,
+        label=label,
+        root=root,
+        files=files,
+        workers=workers,
+        extract=make_extract(source) if state == "available" else None,
+        file_key=make_file_key,
+        state=state,
+        detail=detail,
+    )
+
+
+def _normalize_source_group(value: object) -> Optional[str]:
+    if not value:
+        return None
+    group = str(value).strip().casefold()
+    return {"books": "book", "resources": "resource"}.get(group, group)
+
+
+def _json_files(root: Path) -> List[Path]:
+    """Snapshot a legacy JSON directory or a validated managed generation."""
+    root = root.resolve()
+    generation = root.parent
+    if root.name == "indexed" and generation.parent.name == "generations":
+        manifest = validate_generation(
+            generation, expected_generation_id=generation.name
+        )
+        allowed = [
+            generation / item["path"]
+            for item in manifest["artifacts"]
+            if item.get("role") == "indexed_document"
+        ]
+        return sorted(path for path in allowed if path.parent == root)
+    return sorted(root.glob("*.json"))
+
+
+def _json_covered_filenames(
+    config: dict, resolved_sources: Optional[Sequence[tuple]] = None
+) -> Dict[Optional[str], Set[str]]:
+    """Return indexable JSON filenames grouped by their originating PDF source."""
+    covered: Dict[Optional[str], Set[str]] = {}
+    if resolved_sources is None:
+        resolved_sources = []
+        for index, source in enumerate(config.get("json_sources", [])):
+            root = Path(source["path"]).expanduser().resolve()
+            state, detail = _path_state(root, bool(source.get("enabled", True)))
+            files = _json_files(root) if state == "available" else []
+            resolved_sources.append((index, source, root, files, state, detail))
+    for _, source, _, files, state, _ in resolved_sources:
+        if state != "available":
             continue
-        for p in d.glob("*.json"):
-            try:
-                name = _json.loads(p.read_text(encoding="utf-8")).get("file_name")
-            except Exception:
+        for path in files:
+            obj, error = load_indexable_json(path)
+            if error or obj is None:
                 continue
-            if name:
-                covered.add(name)
+            name = obj.get("file_name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            group = _normalize_source_group(obj.get("source_group"))
+            covered.setdefault(group, set()).add(name.strip())
     return covered
 
 
 def iter_sources(config: dict, vault_path: Path, max_chars: int, overlap: int):
-    """Yield a ``Source`` for the Markdown vault and every configured PDF/JSON dir.
-
-    PDF sources are a *fallback*: any file whose name is already covered by a
-    ``json_sources`` document is skipped, so books/resources are indexed exactly
-    once (from the richer pre-extracted JSON) and live PDF parsing only handles
-    new files the doc-text-extractor pipeline hasn't processed yet.
-    """
+    """Yield source-scoped Markdown, PDF, and enriched-JSON definitions."""
     md_workers = int(config.get("markdown_workers", 1))
     pdf_workers = int(config.get("pdf_workers", 1))
 
-    # Markdown vault (single source)
-    md_files = [f for f in sorted(vault_path.rglob("*.md")) if not should_exclude(f, vault_path, config)]
+    vault_state, vault_detail = _path_state(vault_path, True)
+    md_files = []
+    if vault_state == "available":
+        md_files = [
+            path
+            for path in sorted(vault_path.rglob("*.md"))
+            if not should_exclude(path, vault_path, config)
+        ]
     yield Source(
-        "markdown", f"Markdown: {len(md_files)} files", md_files, md_workers,
-        lambda f: extract_md_file(f, vault_path, config, max_chars, overlap),
-        lambda f: f.relative_to(vault_path).as_posix(),
+        source_id="markdown:vault",
+        kind="markdown",
+        label=(
+            f"Markdown: {len(md_files)} files"
+            if vault_state == "available"
+            else f"Markdown: {vault_state} — {vault_path}"
+        ),
+        root=vault_path,
+        files=md_files,
+        workers=md_workers,
+        extract=(
+            lambda path: extract_md_file(path, vault_path, config, max_chars, overlap)
+            if vault_state == "available"
+            else None
+        ),
+        file_key=lambda path: path.relative_to(vault_path).as_posix(),
+        state=vault_state,
+        detail=vault_detail,
     )
 
-    json_covered = _json_covered_filenames(config)
+    resolved_json_sources = []
+    for index, source_config in enumerate(config.get("json_sources", [])):
+        root = Path(source_config["path"]).expanduser().resolve()
+        state, detail = _path_state(
+            root, bool(source_config.get("enabled", True))
+        )
+        files = _json_files(root) if state == "available" else []
+        resolved_json_sources.append(
+            (index, source_config, root, files, state, detail)
+        )
 
-    # PDF source directories (fallback for files without pre-extracted JSON)
-    for src in config.get("pdf_sources", []):
+    json_covered = _json_covered_filenames(config, resolved_json_sources)
+    pdf_source_configs = config.get("pdf_sources", [])
+
+    for index, source_config in enumerate(pdf_source_configs):
         source = _dir_source(
-            "pdf", src, "*.pdf", pdf_workers,
-            lambda s: (lambda f, t=s.get("type", "resource"): extract_pdf_file(f, t, max_chars, overlap)),
-            lambda f: f.name,
+            "pdf",
+            source_config,
+            index,
+            "*.pdf",
+            pdf_workers,
+            lambda item: (
+                lambda path, type_=item.get("type", "resource"): extract_pdf_file(
+                    path, type_, max_chars, overlap
+                )
+            ),
+            lambda path: path.name,
         )
         if json_covered and source.files:
-            kept = [f for f in source.files if f.name not in json_covered]
+            group = _normalize_source_group(source_config.get("type"))
+            covered_names = set(json_covered.get(group, set()))
+            if len(pdf_source_configs) == 1:
+                covered_names.update(json_covered.get(None, set()))
+            kept = [path for path in source.files if path.name not in covered_names]
             skipped = len(source.files) - len(kept)
             label = source.label + (f" ({skipped} covered by JSON, skipped)" if skipped else "")
-            source = source._replace(files=kept, label=label)
+            source = replace(
+                source,
+                files=kept,
+                label=label,
+                excluded_files=skipped,
+            )
         yield source
 
-    # Pre-extracted document JSON directories
-    for src in config.get("json_sources", []):
-        yield _dir_source(
-            "json", src, "*.json", pdf_workers,
-            lambda s: (lambda f: extract_json_doc(f, max_chars, overlap)),
-            None,  # a corrupt JSON can't be mapped to its file_name → no preserve
+    for index, source_config, root, files, state, detail in resolved_json_sources:
+        source_id = _source_id("json", source_config, index)
+        label = (
+            f"JSON source [{source_config.get('type')}]"
+            if source_config.get("type")
+            else "JSON source"
+        )
+        if state == "available":
+            label = f"{label}: {len(files)} files — {root.name}"
+        else:
+            label = f"{label}: {state} — {root}"
+        yield Source(
+            source_id=source_id,
+            kind="json",
+            label=label,
+            root=root,
+            files=files,
+            workers=pdf_workers,
+            extract=(
+                lambda path: extract_json_doc(path, max_chars, overlap)
+                if state == "available"
+                else None
+            ),
+            file_key=lambda path: path.name,
+            state=state,
+            detail=detail,
         )

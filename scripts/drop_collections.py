@@ -21,6 +21,7 @@ import argparse
 import sys
 
 from rag.utils import load_config  # sets telemetry env var and patches posthog before chromadb loads
+from rag.locking import IndexLockedError, IndexWriterLock
 from rag.store import list_collection_names, drop_collection
 
 
@@ -33,18 +34,29 @@ def main():
 
     config = load_config()
     active = config.get("collection_name", "obsidian_markdown")
-    existing = list_collection_names(config)
 
-    for name in args.names:
-        if name == active and not args.force:
-            print(f"REFUSING to drop {name!r}: it is the active collection in config.yaml "
-                  f"(pass --force to override).")
-            continue
-        if name not in existing:
-            print(f"skip {name!r}: not present")
-            continue
-        count = drop_collection(config, name)
-        print(f"dropped {name!r} ({count} chunks)")
+    # Dropping collections is a destructive writer against the index directory;
+    # hold the same cross-process lock as the indexer so it can't race a run.
+    try:
+        lock = IndexWriterLock(config.get("index_path", "./chroma_db"), "drop-collections")
+        lock.acquire()
+    except IndexLockedError as exc:
+        print(str(exc))
+        return 1
+    try:
+        existing = list_collection_names(config)
+        for name in args.names:
+            if name == active and not args.force:
+                print(f"REFUSING to drop {name!r}: it is the active collection in config.yaml "
+                      f"(pass --force to override).")
+                continue
+            if name not in existing:
+                print(f"skip {name!r}: not present")
+                continue
+            count = drop_collection(config, name)
+            print(f"dropped {name!r} ({count} chunks)")
+    finally:
+        lock.release()
 
     return 0
 

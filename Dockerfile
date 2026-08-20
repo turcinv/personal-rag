@@ -21,9 +21,10 @@ COPY src/ ./src/
 COPY tests/ ./tests/
 COPY config.yaml .env.example ./
 
-# Editable install must come AFTER src/ exists: this is a src-layout package,
-# so setuptools puts egg-info under src/ and errors out if the dir is missing.
-RUN pip install --no-cache-dir -e . --no-deps
+# Regular (non-editable) install: the package is built into a wheel and copied
+# into site-packages, so the deployed image does not depend on the source tree
+# staying in place. --no-deps because requirements.txt already pinned everything.
+RUN pip install --no-cache-dir . --no-deps
 
 ENV HF_HOME=/data/hf-cache
 ENV TRANSFORMERS_CACHE=/data/hf-cache

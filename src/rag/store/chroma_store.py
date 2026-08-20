@@ -4,10 +4,11 @@ The ONLY module in this repo allowed to ``import chromadb`` (see the ADR,
 Axis 2, and CLAUDE.md's call-site map). Behavior-preserving: reproduces
 today's exact ChromaDB calls — ``PersistentClient`` + ``get_or_create_collection``
 with ``metadata={"hnsw:space": "cosine"}``, content-hash ``upsert``,
-``get(include=["metadatas"])`` for the incremental-diff snapshot, ``query()``
+paged metadata/record iteration for reconciliation and lexical builds, ``query()``
 with the ``[0]``-unwrap, and ``delete()``. No ranking, metric, or ID change.
 """
 
+import json
 import logging
 
 # Import order matters: rag.utils sets ANONYMIZED_TELEMETRY and patches
@@ -15,10 +16,37 @@ import logging
 # utils.py's module docstring) — this is the only module that imports
 # chromadb, so it is also the only place that ordering must be preserved.
 from .. import utils  # noqa: F401
+from ..retrieval import RetrievalFilter
 
 import chromadb
 
 logger = logging.getLogger("rag")
+
+
+def compile_where(where):
+    """Compile a backend-neutral :class:`RetrievalFilter` into a Chroma where-dict.
+
+    This is the ONE place Chroma's ``$eq``/``$and`` filter syntax is constructed
+    — application layers pass a neutral ``RetrievalFilter`` and never see it. A
+    legacy raw where-dict is passed through unchanged (the retrieval-algorithm
+    tests and any pre-DTO caller still work); ``None``/empty compiles to ``None``.
+
+    Clause order follows ``RetrievalFilter.SCALAR_FIELDS`` and a single clause is
+    emitted bare (not wrapped in ``$and``), matching the historical
+    ``build_where`` byte-for-byte.
+    """
+    if where is None:
+        return None
+    if isinstance(where, RetrievalFilter):
+        clauses = [
+            {name: {"$eq": value}} for name, value in where.scalar_constraints()
+        ]
+        if not clauses:
+            return None
+        if len(clauses) == 1:
+            return clauses[0]
+        return {"$and": clauses}
+    return where  # legacy raw where-dict passthrough
 
 
 class ChromaStore:
@@ -70,14 +98,38 @@ class ChromaStore:
         )
         self._collection_name = name
 
-    def snapshot(self) -> dict:
-        """Return ``{id: metadata}`` for every chunk currently stored."""
-        snap = self._coll().get(include=["metadatas"])
-        return dict(zip(snap["ids"], snap["metadatas"]))
+    def read_index_state(self):
+        raw = (self._coll().metadata or {}).get("rag_index_state")
+        if not raw:
+            return None
+        return json.loads(raw)
 
-    def existing_ids(self) -> set:
-        """Return the set of chunk IDs currently stored."""
-        return set(self._coll().get(include=[])["ids"])
+    def write_index_state(self, state) -> None:
+        collection = self._coll()
+        metadata = {
+            key: value
+            for key, value in dict(collection.metadata or {}).items()
+            if key != "hnsw:space"
+        }
+        metadata["rag_index_state"] = json.dumps(
+            state, sort_keys=True, separators=(",", ":")
+        )
+        collection.modify(metadata=metadata)
+
+    def iter_metadata(self, page_size: int = 5_000):
+        """Yield ``(chunk_id, metadata)`` using bounded Chroma pages."""
+        coll = self._coll()
+        offset = 0
+        while True:
+            page = coll.get(include=["metadatas"], limit=page_size, offset=offset)
+            ids = page["ids"]
+            if not ids:
+                break
+            for chunk_id, metadata in zip(ids, page["metadatas"]):
+                yield chunk_id, metadata
+            if len(ids) < page_size:
+                break
+            offset += page_size
 
     def iter_records(self, page_size: int = 10_000):
         """Yield ``(chunk_id, document, metadata)`` for every stored chunk.
@@ -138,13 +190,14 @@ class ChromaStore:
         ``collection.query(...)``; client-side BM25 fusion (when requested)
         happens above this call in ``query.search()``.
         """
+        compiled = compile_where(where)
         query_kwargs = dict(
             query_embeddings=[embedding],
             n_results=k,
             include=["documents", "metadatas", "distances"],
         )
-        if where:
-            query_kwargs["where"] = where
+        if compiled:
+            query_kwargs["where"] = compiled
 
         results = self._coll().query(**query_kwargs)
         docs = results["documents"][0]

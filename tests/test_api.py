@@ -22,7 +22,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rag.api.app import app
-from rag.api.auth import JWT_ALGORITHM, JWT_SECRET_ENV
+from rag.api.auth import (
+    JWT_ALGORITHM,
+    JWT_AUDIENCE_ENV,
+    JWT_ISSUER_ENV,
+    JWT_SECRET_ENV,
+)
 from rag.api.deps import get_rag_state
 
 # ── shared test constants / fakes ──────────────────────────────────────────────
@@ -232,6 +237,8 @@ def test_status_secret_unset_is_500(client, monkeypatch):
 # still runs, letting us assert the exact where-dict the route produced.
 
 import rag.query as rag_query_mod  # noqa: E402  (kept with the /query section)
+from rag.retrieval import RetrievalFilter  # noqa: E402
+from rag.store import compile_where  # noqa: E402
 
 
 class SearchRecorder:
@@ -311,7 +318,7 @@ def test_query_defaults_forwarded(client, jwt_secret, patch_search):
     assert resp.status_code == 200
     assert rec.last["n_results"] == 8
     assert rec.last["rerank"] is True
-    assert rec.last["filters"] is None
+    assert rec.last["retrieval_filter"].is_empty
 
 
 def test_query_omitted_rerank_follows_config_default(client, fake_state, jwt_secret, patch_search):
@@ -361,7 +368,7 @@ def test_query_empty_or_whitespace_query_422(client, jwt_secret, patch_search, b
     assert resp.status_code == 422
 
 
-def test_query_filters_map_to_build_where(client, jwt_secret, patch_search):
+def test_query_filters_map_to_retrieval_filter(client, jwt_secret, patch_search):
     rec = patch_search(_records())
     resp = client.post(
         "/query",
@@ -369,7 +376,11 @@ def test_query_filters_map_to_build_where(client, jwt_secret, patch_search):
         json={"query": "q", "filters": {"domain": "DevOps", "type": "book"}},
     )
     assert resp.status_code == 200
-    assert rec.last["filters"] == {
+    rf = rec.last["retrieval_filter"]
+    assert isinstance(rf, RetrievalFilter)
+    assert rf.domain == "DevOps" and rf.type == "book"
+    # The store compiler produces the exact backend where-dict from the DTO.
+    assert compile_where(rf) == {
         "$and": [
             {"domain": {"$eq": "DevOps"}},
             {"type": {"$eq": "book"}},
@@ -377,16 +388,17 @@ def test_query_filters_map_to_build_where(client, jwt_secret, patch_search):
     }
 
 
-def test_query_no_filters_passes_none(client, jwt_secret, patch_search):
+def test_query_no_filters_passes_empty(client, jwt_secret, patch_search):
     rec = patch_search(_records())
     resp = client.post("/query", headers=_auth(_mint()), json={"query": "q"})
     assert resp.status_code == 200
-    assert rec.last["filters"] is None
-    assert rec.last["tags"] is None      # no filters block -> tags None too
+    rf = rec.last["retrieval_filter"]
+    assert rf.is_empty
+    assert compile_where(rf) is None
 
 
-def test_query_status_filter_maps_to_build_where(client, jwt_secret, patch_search):
-    """`status` is a native $eq clause produced by the REAL build_where."""
+def test_query_status_filter_maps_to_retrieval_filter(client, jwt_secret, patch_search):
+    """`status` compiles to a native $eq clause via the store compiler."""
     rec = patch_search(_records())
     resp = client.post(
         "/query",
@@ -394,12 +406,13 @@ def test_query_status_filter_maps_to_build_where(client, jwt_secret, patch_searc
         json={"query": "q", "filters": {"status": "processed"}},
     )
     assert resp.status_code == 200
-    assert rec.last["filters"] == {"status": {"$eq": "processed"}}
+    rf = rec.last["retrieval_filter"]
+    assert rf.status == "processed"
+    assert compile_where(rf) == {"status": {"$eq": "processed"}}
 
 
-def test_query_tags_forwarded_to_search_not_where(client, jwt_secret, patch_search):
-    """`tags` is a post-filter: it reaches search() as a list and never becomes a
-    where clause (filters stays None when only tags are given)."""
+def test_query_tags_forwarded_as_post_filter_not_where(client, jwt_secret, patch_search):
+    """`tags` ride in the DTO but never compile to a where clause (post-filter)."""
     rec = patch_search(_records())
     resp = client.post(
         "/query",
@@ -407,12 +420,14 @@ def test_query_tags_forwarded_to_search_not_where(client, jwt_secret, patch_sear
         json={"query": "q", "filters": {"tags": ["devops", "ci"]}},
     )
     assert resp.status_code == 200
-    assert rec.last["tags"] == ["devops", "ci"]
-    assert rec.last["filters"] is None
+    rf = rec.last["retrieval_filter"]
+    assert list(rf.tags) == ["devops", "ci"]
+    assert not rf.has_scalar
+    assert compile_where(rf) is None
 
 
 def test_query_status_and_tags_together(client, jwt_secret, patch_search):
-    """status rides in the where-dict (with domain), tags go to search()."""
+    """status compiles into the where-dict (with domain); tags stay a post-filter."""
     rec = patch_search(_records())
     resp = client.post(
         "/query",
@@ -423,13 +438,14 @@ def test_query_status_and_tags_together(client, jwt_secret, patch_search):
         },
     )
     assert resp.status_code == 200
-    assert rec.last["filters"] == {
+    rf = rec.last["retrieval_filter"]
+    assert list(rf.tags) == ["devops"]
+    assert compile_where(rf) == {
         "$and": [
             {"domain": {"$eq": "DevOps"}},
             {"status": {"$eq": "processed"}},
         ]
     }
-    assert rec.last["tags"] == ["devops"]
 
 
 def test_query_rerank_true_with_scores_reports_reranked(client, jwt_secret, patch_search):
@@ -846,8 +862,9 @@ def test_answer_forwards_search_and_generation_params(
     assert resp.status_code == 200
     assert rec.last["n_results"] == 5
     assert rec.last["rerank"] is False
-    assert rec.last["filters"] == {"domain": {"$eq": "DevOps"}}
-    assert rec.last["tags"] == ["devops"]
+    rf = rec.last["retrieval_filter"]
+    assert list(rf.tags) == ["devops"]
+    assert compile_where(rf) == {"domain": {"$eq": "DevOps"}}
     gen_call = fake_state["generator"].last
     assert gen_call["question"] == "q"
     assert gen_call["max_tokens"] == 321
@@ -926,3 +943,86 @@ def test_answer_n_results_cap_20(
         json={"query": "q", "n_results": n_results},
     )
     assert resp.status_code == expected
+
+
+# ── Task 11: readiness, scopes, audience/issuer ─────────────────────────────────
+
+
+def _mint_claims(secret=SECRET, **extra):
+    """Mint a token with arbitrary extra claims (scopes/aud/iss)."""
+    now = datetime.now(timezone.utc)
+    payload = {"sub": "unit-test", "iat": now, "exp": now + timedelta(hours=1), **extra}
+    return jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
+
+
+def test_ready_no_auth_and_reports_ready(client):
+    """/ready is unauthenticated and reports ready when model + populated store."""
+    resp = client.get("/ready")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ready"] is True
+    assert body["store_populated"] is True
+    assert body["count"] == 1234
+    assert body["generation_enabled"] is True  # fake_state has a FakeGenerator
+
+
+def test_ready_503_when_store_empty(client, fake_state):
+    fake_state["store"] = FakeStore(name="obsidian_markdown", count=0)
+    resp = client.get("/ready")
+    assert resp.status_code == 503
+    assert resp.json()["ready"] is False
+
+
+def test_ready_503_when_model_missing(client, fake_state):
+    fake_state["model"] = None
+    resp = client.get("/ready")
+    assert resp.status_code == 503
+
+
+def test_unscoped_token_has_full_access(client, jwt_secret, patch_search, indexer):
+    """A legacy token with no scopes claim reaches every authenticated route."""
+    patch_search(_records())
+    token = _mint()  # no scopes
+    assert client.get("/status", headers=_auth(token)).status_code == 200
+    assert client.post("/query", headers=_auth(token), json={"query": "q"}).status_code == 200
+    assert client.post("/answer", headers=_auth(token), json={"query": "q"}).status_code == 200
+    assert client.post("/index", headers=_auth(token)).status_code == 202
+
+
+def test_query_scope_token_denied_on_index_and_answer(client, jwt_secret, patch_search):
+    """A query-only token can /query and /status but is 403 on /answer and /index."""
+    patch_search(_records())
+    token = _mint_claims(scopes=["query"])
+    assert client.post("/query", headers=_auth(token), json={"query": "q"}).status_code == 200
+    assert client.get("/status", headers=_auth(token)).status_code == 200
+    assert client.post("/answer", headers=_auth(token), json={"query": "q"}).status_code == 403
+    assert client.post("/index", headers=_auth(token)).status_code == 403
+
+
+def test_index_scope_token_denied_on_query(client, jwt_secret, patch_search):
+    patch_search(_records())
+    token = _mint_claims(scopes=["index"])
+    assert client.post("/query", headers=_auth(token), json={"query": "q"}).status_code == 403
+
+
+def test_audience_enforced_when_configured(client, jwt_secret, patch_search, monkeypatch):
+    """With RAG_API_JWT_AUDIENCE set, a token missing/with-wrong aud is rejected."""
+    patch_search(_records())
+    monkeypatch.setenv(JWT_AUDIENCE_ENV, "personal-rag")
+
+    # No aud claim → rejected.
+    assert client.post("/query", headers=_auth(_mint()), json={"query": "q"}).status_code == 401
+    # Wrong aud → rejected.
+    bad = _mint_claims(aud="other")
+    assert client.post("/query", headers=_auth(bad), json={"query": "q"}).status_code == 401
+    # Correct aud → allowed.
+    good = _mint_claims(aud="personal-rag")
+    assert client.post("/query", headers=_auth(good), json={"query": "q"}).status_code == 200
+
+
+def test_issuer_enforced_when_configured(client, jwt_secret, patch_search, monkeypatch):
+    patch_search(_records())
+    monkeypatch.setenv(JWT_ISSUER_ENV, "rag-token")
+    assert client.post("/query", headers=_auth(_mint()), json={"query": "q"}).status_code == 401
+    good = _mint_claims(iss="rag-token")
+    assert client.post("/query", headers=_auth(good), json={"query": "q"}).status_code == 200

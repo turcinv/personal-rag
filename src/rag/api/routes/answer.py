@@ -1,7 +1,7 @@
 """Answer surface: POST /answer — retrieval-augmented generation.
 
-Sits above the retrieval core: runs the same ``build_where`` + ``search`` path
-as ``/query`` to fetch the relevant chunks, then asks the configured
+Sits above the retrieval core: runs the same ``RetrievalFilter`` + ``search``
+path as ``/query`` to fetch the relevant chunks, then asks the configured
 ``Generator`` (loaded once in the app lifespan) for a grounded, cited answer.
 JWT-protected like the rest of the authenticated surface.
 
@@ -20,7 +20,9 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ... import query as rag_query
 from ...generation import GenerationError
-from ..auth import require_jwt
+from ...retrieval import RetrievalFilter
+from ..auth import SCOPE_ANSWER, require_scope
+from ..concurrency import guard
 from ..deps import get_rag_state
 from ..schemas import AnswerRequest, AnswerResponse, Citation
 
@@ -56,7 +58,7 @@ def _citations(records: list) -> list:
 def answer(
     request: AnswerRequest,
     state: dict = Depends(get_rag_state),
-    _claims: dict = Depends(require_jwt),
+    _claims: dict = Depends(require_scope(SCOPE_ANSWER)),
 ) -> AnswerResponse:
     """Retrieve, then synthesize a grounded answer with inline [n] citations."""
     generator = state.get("generator")
@@ -70,15 +72,7 @@ def answer(
             ),
         )
 
-    f = request.filters
-    where = rag_query.build_where(
-        domain=f.domain if f else None,
-        type_=f.type if f else None,
-        source=f.source if f else None,
-        confidence=f.confidence if f else None,
-        subdomain=f.subdomain if f else None,
-        status=f.status if f else None,
-    )
+    retrieval_filter = RetrievalFilter.from_api_filters(request.filters)
 
     # rerank omitted (None) → fall back to the profile's rerank_default.
     rerank = (
@@ -87,16 +81,16 @@ def answer(
         else rag_query.rerank_default(state["config"])
     )
 
-    records = rag_query.search(
-        request.query,
-        n_results=request.n_results,
-        filters=where,
-        tags=f.tags if f else None,
-        config=state["config"],
-        model=state["model"],
-        store=state["store"],
-        rerank=rerank,
-    )
+    with guard(state):
+        records = rag_query.search(
+            request.query,
+            n_results=request.n_results,
+            retrieval_filter=retrieval_filter,
+            config=state["config"],
+            model=state["model"],
+            store=state["store"],
+            rerank=rerank,
+        )
 
     reranked = rerank and any("rerank_score" in r for r in records)
 

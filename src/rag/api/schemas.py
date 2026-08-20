@@ -14,6 +14,21 @@ class HealthResponse(BaseModel):
     status: str = "ok"
 
 
+class ReadyResponse(BaseModel):
+    """Readiness payload (unauthenticated ``GET /ready``).
+
+    ``ready`` is True only when the model is loaded and the store holds chunks;
+    the other fields surface the live serving state (active vector generation,
+    whether answer generation is wired, and any index-writer-lock owner)."""
+
+    ready: bool
+    store_populated: bool
+    count: Optional[int] = None
+    generation_id: Optional[str] = None
+    generation_enabled: bool = False
+    index_locked_by: Optional[str] = None
+
+
 class StatusResponse(BaseModel):
     """Index status: is the collection actually populated? (``GET /status``)."""
 

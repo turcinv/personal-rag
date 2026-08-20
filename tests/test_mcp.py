@@ -63,9 +63,10 @@ def fake_runtime(monkeypatch):
         assert model_name == "fake-model"
         return model
 
-    def fake_open_store(loaded_config):
+    def fake_open_store(loaded_config, **kwargs):
         counters["open_store"] += 1
         assert loaded_config is config
+        assert kwargs["model"] is model
         return store
 
     def fake_search(query, n_results=8, **kwargs):
@@ -206,7 +207,7 @@ async def test_stdio_subprocess_handshake_and_search(tmp_path):
                 "server.load_config = lambda: config",
                 "server.setup_logging = lambda config, console: None",
                 "server.rag_query.get_model = lambda name: object()",
-                "server.rag_query.open_store = lambda config: object()",
+                "server.rag_query.open_store = lambda config, **kwargs: object()",
                 f"record = {FULL_RECORD!r}",
                 "server.rag_query.search = lambda query, n_results=8, **kwargs: [record]",
                 "server.main()",

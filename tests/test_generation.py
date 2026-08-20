@@ -14,10 +14,12 @@ import pytest
 from rag.generation import (
     AnswerResult,
     GenerationConfigError,
+    GenerationDisabledError,
     GenerationError,
     build_prompt,
     format_contexts,
     get_generator,
+    validate_egress_url,
 )
 from rag.generation.anthropic_gen import AnthropicGenerator
 from rag.generation.openai_gen import OpenAIGenerator
@@ -274,3 +276,66 @@ def test_openai_custom_base_url():
     )
     gen.generate("q", RECORDS)
     assert captured["url"] == "http://localhost:11434/v1/chat/completions"
+
+
+# ── Task 11: egress validation, disabled-vs-invalid, error-body sanitization ────
+
+
+def test_validate_egress_url_allows_https_and_localhost_http():
+    assert validate_egress_url("https://api.openai.com/") == "https://api.openai.com"
+    assert validate_egress_url("http://localhost:11434") == "http://localhost:11434"
+    assert validate_egress_url("http://127.0.0.1:8080/v1") == "http://127.0.0.1:8080/v1"
+
+
+def test_validate_egress_url_rejects_insecure_remote():
+    with pytest.raises(GenerationConfigError, match="insecure"):
+        validate_egress_url("http://api.evil.example.com")
+
+
+def test_validate_egress_url_rejects_non_http_scheme():
+    with pytest.raises(GenerationConfigError, match="expected an http"):
+        validate_egress_url("ftp://example.com")
+
+
+def test_openai_generator_rejects_insecure_remote_base_url():
+    with pytest.raises(GenerationConfigError, match="insecure"):
+        OpenAIGenerator("sk", "m", base_url="http://api.remote.example.com")
+
+
+def test_get_generator_rejects_insecure_base_url(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    with pytest.raises(GenerationConfigError, match="insecure"):
+        get_generator({
+            "generation": {
+                "provider": "openai",
+                "model": "gpt-x",
+                "base_url": "http://api.remote.example.com",
+            }
+        })
+
+
+def test_disabled_states_use_disabled_subclass():
+    # No provider / missing key are "disabled" (subclass); the API lifespan
+    # catches this to keep /query working.
+    with pytest.raises(GenerationDisabledError):
+        get_generator({})
+
+
+def test_unknown_provider_is_invalid_not_disabled():
+    # A typo is an invalid config — base class, NOT the disabled subclass, so the
+    # lifespan does not swallow it.
+    with pytest.raises(GenerationConfigError) as excinfo:
+        get_generator({"generation": {"provider": "llama.cpp", "model": "m"}})
+    assert not isinstance(excinfo.value, GenerationDisabledError)
+
+
+def test_provider_error_body_is_not_leaked_to_caller():
+    """A provider error body must be kept out of the raised GenerationError."""
+    def handler(request):
+        return httpx.Response(500, text="SECRET-PROVIDER-DETAIL leaked prompt echo")
+
+    gen = OpenAIGenerator("sk", "gpt-x", client=_mock_client(handler))
+    with pytest.raises(GenerationError) as excinfo:
+        gen.generate("q", RECORDS)
+    assert "500" in str(excinfo.value)
+    assert "SECRET-PROVIDER-DETAIL" not in str(excinfo.value)

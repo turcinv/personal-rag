@@ -17,9 +17,11 @@ from .base import (
     AnswerResult,
     Generator,
     GenerationConfigError,
+    GenerationDisabledError,
     GenerationError,
     build_prompt,
     format_contexts,
+    validate_egress_url,
 )
 
 __all__ = [
@@ -27,9 +29,11 @@ __all__ = [
     "AnswerResult",
     "GenerationError",
     "GenerationConfigError",
+    "GenerationDisabledError",
     "build_prompt",
     "format_contexts",
     "get_generator",
+    "validate_egress_url",
 ]
 
 # provider name -> (module attr path, default model, default api-key env var)
@@ -62,11 +66,13 @@ def get_generator(config: dict):
     gen_cfg = config.get("generation") or {}
     provider = gen_cfg.get("provider")
     if not provider:
-        raise GenerationConfigError(
+        # "not wired up" — disabled, not a bug. Lifespan keeps /query working.
+        raise GenerationDisabledError(
             "No generation.provider configured. Set generation.provider to "
             "'anthropic' or 'openai' (and export the API key) to enable /answer."
         )
     if provider not in _PROVIDERS:
+        # A typo is a real config bug — surfaces loudly at startup.
         raise GenerationConfigError(
             f"Unknown generation provider {provider!r} — expected one of "
             f"{sorted(_PROVIDERS)}."
@@ -76,7 +82,8 @@ def get_generator(config: dict):
     key_env = gen_cfg.get("api_key_env", default_key_env)
     api_key = os.environ.get(key_env)
     if not api_key:
-        raise GenerationConfigError(
+        # Provider chosen but key not exported — an expected disabled state.
+        raise GenerationDisabledError(
             f"Generation provider {provider!r} is configured but the API key env "
             f"var {key_env!r} is not set. Export it to enable /answer."
         )
@@ -99,6 +106,8 @@ def get_generator(config: dict):
     )
     base_url = gen_cfg.get("base_url")
     if base_url:
-        kwargs["base_url"] = base_url
+        # Validate egress destination before constructing the client (rejects
+        # insecure remote http; allows localhost for a local inference server).
+        kwargs["base_url"] = validate_egress_url(base_url)
 
     return cls(api_key, model, **kwargs)

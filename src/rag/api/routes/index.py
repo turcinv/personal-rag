@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from ..auth import require_jwt
+from ..auth import SCOPE_INDEX, require_scope
 from ..deps import get_rag_state
 from ..jobs import manager
 from ..schemas import IndexJobResponse
@@ -35,7 +35,7 @@ def _log_dir(state: dict) -> Path:
 @router.post("", response_model=IndexJobResponse, status_code=status.HTTP_202_ACCEPTED)
 def start_index(
     state: dict = Depends(get_rag_state),
-    _claims: dict = Depends(require_jwt),
+    _claims: dict = Depends(require_scope(SCOPE_INDEX)),
 ) -> IndexJobResponse:
     """Kick off a reindex as a background subprocess. 202 + job_id on success;
     409 if an index run is already in progress (never two against one Chroma
@@ -50,7 +50,9 @@ def start_index(
 
 
 @router.get("/jobs/{job_id}", response_model=IndexJobResponse)
-def job_status(job_id: str, _claims: dict = Depends(require_jwt)) -> IndexJobResponse:
+def job_status(
+    job_id: str, _claims: dict = Depends(require_scope(SCOPE_INDEX))
+) -> IndexJobResponse:
     """Return the tracked status for ``job_id`` (404 if unknown). No server-side
     log paths are included in the body."""
     record = manager.get(job_id)

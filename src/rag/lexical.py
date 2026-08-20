@@ -31,7 +31,11 @@ import logging
 import os
 import re
 import sqlite3
+import tempfile
 
+from .locking import IndexLockedError, IndexWriterLock
+from .provenance import IndexState, read_index_state
+from .retrieval import RetrievalFilter
 from .utils import load_config, setup_logging
 from .store import get_store
 
@@ -41,6 +45,10 @@ logger = logging.getLogger("rag")
 # and `metadata` (a JSON blob) ride along UNINDEXED. porter stems English
 # (troubleshoot↔troubleshooting); unicode61 folds diacritics.
 _SCHEMA = """
+CREATE TABLE rag_metadata(
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 CREATE VIRTUAL TABLE chunks USING fts5(
     chunk_id UNINDEXED,
     document,
@@ -53,9 +61,25 @@ CREATE VIRTUAL TABLE chunks USING fts5(
 # so "nasazení" stays one token; re.UNICODE is explicit-but-redundant.
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
-# Reuse one read connection per db path across the eval's 45 queries (mirrors
-# query._MODEL_CACHE). Populated lazily, only on the hybrid path.
+# Reuse one read connection per canonical db path across queries. Each entry also
+# carries the file identity so an atomic replacement is reopened automatically.
 _LEXICAL_CACHE: dict = {}
+_LEXICAL_SCHEMA_VERSION = "1"
+
+
+def _canonical_path(path):
+    return os.path.realpath(os.path.abspath(os.path.expanduser(os.fspath(path))))
+
+
+def _path_signature(path):
+    stat = os.stat(path)
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
+def _evict_lexical(path):
+    cached = _LEXICAL_CACHE.pop(_canonical_path(path), None)
+    if cached is not None:
+        cached[1].close()
 
 
 def _to_match_query(text):
@@ -77,10 +101,10 @@ def _to_match_query(text):
 def _matches_where(meta, where):
     """Evaluate a Chroma-style where-dict against a chunk's metadata.
 
-    Handles exactly the shapes ``query.build_where`` emits: a single
-    ``{field: {"$eq": v}}`` clause or ``{"$and": [clauses...]}``. Used only to
-    post-filter lexical candidates for ``rag-query --hybrid --domain X`` — the
-    golden-set eval is unfiltered, so this never fires there.
+    Handles exactly the shapes the legacy ``build_where`` emitted: a single
+    ``{field: {"$eq": v}}`` clause or ``{"$and": [clauses...]}``. Retained for the
+    raw-dict code path; the neutral :class:`~rag.retrieval.RetrievalFilter` path
+    uses ``filter.matches_scalar`` instead.
     """
     if not where:
         return True
@@ -93,61 +117,189 @@ def _matches_where(meta, where):
     return True
 
 
+def _where_matches(where, meta):
+    """Backend-neutral predicate over one candidate's metadata.
+
+    ``where`` is a :class:`~rag.retrieval.RetrievalFilter` (neutral), a legacy
+    Chroma where-dict, or ``None`` — the lexical adapter accepts all three so it
+    stays in lockstep with whatever ``query.search`` forwards.
+    """
+    if where is None:
+        return True
+    if isinstance(where, RetrievalFilter):
+        return where.matches_scalar(meta)
+    return _matches_where(meta, where)
+
+
+class LexicalIndexStaleError(RuntimeError):
+    """Raised when a lexical sidecar does not match the vector generation."""
+
+
 class LexicalIndex:
     """Read-only BM25 view over one FTS5 lexical index file."""
 
     def __init__(self, path):
-        self.path = os.fspath(path)
+        self.path = _canonical_path(path)
         if not os.path.exists(self.path):
             raise FileNotFoundError(self.path)
-        # check_same_thread=False: read-only queries, safe to share if a future
-        # threaded caller reuses the cached instance.
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        # URI read-only mode prevents a query process from creating sidecars or
+        # mutating an immutable publication. check_same_thread=False supports
+        # sharing the cached reader between API request threads.
+        self._conn = sqlite3.connect(
+            f"file:{self.path}?mode=ro", uri=True, check_same_thread=False
+        )
+
+    def close(self):
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def build_metadata(self):
+        try:
+            rows = self._conn.execute("SELECT key, value FROM rag_metadata").fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        return dict(rows)
+
+    def require_fresh(self, index_state: IndexState):
+        metadata = self.build_metadata()
+        generation = metadata.get("vector_generation_id")
+        fingerprint = metadata.get("provenance_fingerprint")
+        if (
+            metadata.get("schema_version") != _LEXICAL_SCHEMA_VERSION
+            or metadata.get("complete") != "true"
+            or generation != index_state.generation_id
+            or fingerprint != index_state.provenance_fingerprint
+        ):
+            raise LexicalIndexStaleError(
+                "Lexical index is stale for the active vector generation. "
+                "Rebuild it with `make build-lexical`."
+            )
+        return self
 
     @staticmethod
-    def build(records, path, batch_size=5000):
-        """Build (or rebuild) the FTS5 index at ``path`` from ``records``.
-
-        ``records`` is an iterable of ``(chunk_id, document, metadata)`` —
-        typically ``store.iter_records()``. Drops any existing db first (like
-        ``build_sqlite.py``) and inserts in batched transactions. Returns the
-        number of rows written.
-        """
-        path = os.fspath(path)
+    def build(
+        records,
+        path,
+        batch_size=5000,
+        index_state=None,
+        expected_count=None,
+        state_reader=None,
+    ):
+        """Build and validate a sibling temporary DB, then atomically publish it."""
+        configured_path = os.path.abspath(os.path.expanduser(os.fspath(path)))
+        if os.path.islink(configured_path):
+            raise RuntimeError(
+                f"Refusing to replace lexical symlink: {configured_path}"
+            )
+        path = _canonical_path(configured_path)
         parent = os.path.dirname(path)
         if parent:
             os.makedirs(parent, exist_ok=True)
-        for suffix in ("", "-wal", "-shm"):
-            stale = path + suffix
-            if os.path.exists(stale):
-                os.remove(stale)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=parent or "."
+        )
+        os.close(descriptor)
+        os.remove(temporary)
 
-        conn = sqlite3.connect(path)
+        if isinstance(index_state, IndexState):
+            generation_id = index_state.generation_id
+            fingerprint = index_state.provenance_fingerprint
+        elif index_state is not None:
+            generation_id = str(index_state["generation_id"])
+            fingerprint = str(index_state["provenance_fingerprint"])
+        else:
+            generation_id = ""
+            fingerprint = ""
+
         try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.executescript(_SCHEMA)
-            cur = conn.cursor()
-            n = 0
-            batch = []
-            for cid, doc, meta in records:
-                batch.append((cid, doc or "", json.dumps(meta or {}, ensure_ascii=False)))
-                if len(batch) >= batch_size:
+            conn = sqlite3.connect(temporary)
+            try:
+                conn.execute("PRAGMA journal_mode=DELETE")
+                conn.executescript(_SCHEMA)
+                conn.executemany(
+                    "INSERT INTO rag_metadata(key, value) VALUES (?, ?)",
+                    [
+                        ("schema_version", _LEXICAL_SCHEMA_VERSION),
+                        ("complete", "false"),
+                        ("vector_generation_id", generation_id),
+                        ("provenance_fingerprint", fingerprint),
+                    ],
+                )
+                cur = conn.cursor()
+                n = 0
+                batch = []
+                for cid, doc, meta in records:
+                    batch.append(
+                        (cid, doc or "", json.dumps(meta or {}, ensure_ascii=False))
+                    )
+                    if len(batch) >= batch_size:
+                        cur.executemany(
+                            "INSERT INTO chunks(chunk_id, document, metadata) "
+                            "VALUES (?, ?, ?)",
+                            batch,
+                        )
+                        n += len(batch)
+                        batch.clear()
+                if batch:
                     cur.executemany(
                         "INSERT INTO chunks(chunk_id, document, metadata) VALUES (?, ?, ?)",
                         batch,
                     )
                     n += len(batch)
-                    batch.clear()
-            if batch:
-                cur.executemany(
-                    "INSERT INTO chunks(chunk_id, document, metadata) VALUES (?, ?, ?)",
-                    batch,
+                if expected_count is not None and n != expected_count:
+                    raise RuntimeError(
+                        f"Lexical row count mismatch: built {n}, expected {expected_count}"
+                    )
+                conn.execute(
+                    "INSERT INTO rag_metadata(key, value) VALUES (?, ?)",
+                    ("chunk_count", str(n)),
                 )
-                n += len(batch)
-            conn.commit()
+                conn.execute(
+                    "UPDATE rag_metadata SET value = 'true' WHERE key = 'complete'"
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            validation = sqlite3.connect(f"file:{temporary}?mode=ro", uri=True)
+            try:
+                check = validation.execute("PRAGMA quick_check").fetchone()[0]
+                if check != "ok":
+                    raise RuntimeError(f"Lexical SQLite quick_check failed: {check}")
+                rows = validation.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+                metadata = dict(
+                    validation.execute("SELECT key, value FROM rag_metadata").fetchall()
+                )
+                if rows != n or metadata.get("chunk_count") != str(n):
+                    raise RuntimeError("Lexical index count validation failed")
+                if (
+                    metadata.get("schema_version") != _LEXICAL_SCHEMA_VERSION
+                    or metadata.get("complete") != "true"
+                ):
+                    raise RuntimeError("Lexical index metadata validation failed")
+            finally:
+                validation.close()
+
+            if state_reader is not None and index_state is not None:
+                current_state = state_reader()
+                if current_state != index_state:
+                    raise RuntimeError(
+                        "Vector index changed while lexical data was being built; retry"
+                    )
+            os.replace(temporary, path)
+            for suffix in ("-wal", "-shm"):
+                stale = path + suffix
+                if os.path.exists(stale):
+                    os.remove(stale)
+            _evict_lexical(path)
             return n
-        finally:
-            conn.close()
+        except Exception:
+            for suffix in ("", "-wal", "-shm"):
+                stale = temporary + suffix
+                if os.path.exists(stale):
+                    os.remove(stale)
+            raise
 
     def query(self, text, k, where=None):
         """Return up to ``k`` BM25 records for ``text``, best-first.
@@ -172,7 +324,7 @@ class LexicalIndex:
         out = []
         for doc, meta_json in rows:
             meta = json.loads(meta_json) if meta_json else {}
-            if where is not None and not _matches_where(meta, where):
+            if not _where_matches(where, meta):
                 continue
             out.append({"document": doc, "metadata": meta, "distance": None})
             if len(out) >= k:
@@ -242,24 +394,30 @@ def lexical_path_for(config, collection_name=None):
     return os.path.join("./lexical_index", f"{name}.db")
 
 
-def get_lexical(config, collection_name=None):
-    """Return a cached :class:`LexicalIndex` for this profile's lexical db.
-
-    Raises a clear, actionable error if the index has not been built yet — the
-    hybrid path needs a BM25 index over the same chunks as the vector store.
-    """
-    path = lexical_path_for(config, collection_name)
-    cached = _LEXICAL_CACHE.get(path)
-    if cached is None:
-        if not os.path.exists(path):
-            raise FileNotFoundError(
-                f"Lexical index not found at {path!r}. Build it first with "
-                f"`make build-lexical` (rag-build-lexical) — hybrid retrieval needs "
-                f"a BM25 index over the same chunks as the vector store."
-            )
+def get_lexical(config, collection_name=None, index_state=None):
+    """Return a cached reader, reopening it after an atomic DB replacement."""
+    configured_path = lexical_path_for(config, collection_name)
+    path = _canonical_path(configured_path)
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Lexical index not found at {configured_path!r}. Build it first with "
+            f"`make build-lexical` (rag-build-lexical) — hybrid retrieval needs "
+            f"a BM25 index over the same chunks as the vector store."
+        )
+    signature = _path_signature(path)
+    entry = _LEXICAL_CACHE.get(path)
+    if entry is None or entry[0] != signature:
+        if entry is not None:
+            entry[1].close()
         cached = LexicalIndex(path)
-        _LEXICAL_CACHE[path] = cached
-    return cached
+        _LEXICAL_CACHE[path] = (signature, cached)
+    else:
+        cached = entry[1]
+    if index_state is None:
+        raise LexicalIndexStaleError(
+            "Vector generation metadata is required to validate the lexical index"
+        )
+    return cached.require_fresh(index_state)
 
 
 def main():
@@ -273,22 +431,54 @@ def main():
     parser.add_argument("--out", default=None,
                         help="Override the output db path (default: "
                              "./lexical_index/<collection>.db)")
+    parser.add_argument("--wait-for-lock", type=float, default=0.0, metavar="SECONDS",
+                        help="Wait up to SECONDS for the index writer lock instead "
+                             "of failing fast")
     args = parser.parse_args()
 
     config = load_config()
     setup_logging(config, console=True)
 
-    store = get_store(config, args.collection)
-    count = store.count()
-    if count == 0:
-        raise RuntimeError(
-            "Collection is empty — build the vector index first (rag-index). "
-            "The lexical index is built from what is already in the store."
+    index_path = config.get("index_path", "./chroma_db")
+    # The lexical build reads the vector store's records + generation and then
+    # publishes a generation-bound sidecar; hold the same writer lock as the
+    # indexer so a concurrent reindex can't bump the generation mid-build.
+    try:
+        lock = IndexWriterLock(
+            index_path, "rag-build-lexical", timeout=args.wait_for_lock
         )
+    except Exception as exc:  # pragma: no cover - defensive
+        raise SystemExit(str(exc))
+    try:
+        lock.acquire()
+    except IndexLockedError as exc:
+        raise SystemExit(str(exc))
+    try:
+        store = get_store(config, args.collection)
+        state = read_index_state(store)
+        if state is None:
+            raise RuntimeError(
+                "Vector index has no provenance/generation metadata. Rebuild or "
+                "explicitly adopt index provenance before building lexical data."
+            )
+        count = store.count()
+        if count == 0:
+            raise RuntimeError(
+                "Collection is empty — build the vector index first (rag-index). "
+                "The lexical index is built from what is already in the store."
+            )
 
-    path = args.out or lexical_path_for(config, args.collection)
-    logger.info("Building lexical index from %d chunks -> %s", count, path)
-    n = LexicalIndex.build(store.iter_records(), path)
+        path = args.out or lexical_path_for(config, args.collection)
+        logger.info("Building lexical index from %d chunks -> %s", count, path)
+        n = LexicalIndex.build(
+            store.iter_records(),
+            path,
+            index_state=state,
+            expected_count=count,
+            state_reader=lambda: read_index_state(store),
+        )
+    finally:
+        lock.release()
     logger.info("Lexical index built: %d rows at %s", n, path)
     print(f"Lexical index built: {n} rows at {path}")
 

@@ -1,5 +1,34 @@
 # Configuration Reference
 
+### Typed loading, overlays, and preflight
+
+Configuration is validated before use. Unknown keys, invalid worker/batch sizes,
+invalid overlap settings, and malformed nested blocks fail with an actionable
+error. Relative paths are resolved against the selected config file, not the
+process working directory.
+
+A profile may inherit another profile with a relative `extends` path:
+
+```yaml
+extends: config.yaml
+rerank_default: false
+```
+
+`config.personal.yaml` uses this mechanism so the personal profile no longer
+duplicates the complete historical `config.yaml`. `config.example.yaml` is the
+portable starter profile for new machines.
+
+Validate the active profile and inspect every resolved source without indexing:
+
+```bash
+make config-doctor
+.venv/bin/rag-config --strict
+.venv/bin/rag-config --json
+```
+
+Preflight states are `available`, `missing`, `unreadable`, and `disabled`.
+`--strict` exits non-zero for missing or unreadable enabled sources.
+
 ## config.yaml
 
 All settings live in `config.yaml` at the project root. User-specific paths can be overridden via environment variables without editing this file — see [Environment variables](#environment-variables) below.
@@ -67,6 +96,9 @@ extractor:
 | `index_path` | `./chroma_db` | ChromaDB persistent storage directory. |
 | `log_path` | `./logs/rag.log` | App log file (rotating, 5 MB × 3). Console output is unaffected. |
 | `log_db_path` | `<log_path>.sqlite` | Structured SQLite log DB (`logs` table). Defaults alongside `log_path`. |
+| `log_retention_days` | `30` | Rows older than this are pruned from the SQLite log on startup (`0` disables pruning). Keeps the structured log bounded on a long-lived server. |
+| `log_queries` | `false` | When false (default), the raw query text is **not** written to the logs — only its length. Set `true` to log verbatim queries for debugging. Privacy default for a personal KB. |
+| `offline` | `false` | When true (or `RAG_OFFLINE` set), exports `HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1` before any model load so models load only from the local cache and a cold cache fails fast instead of reaching the network. Pair with `embedding_revision` to pin an exact snapshot. |
 | `store` | `chroma` | Retrieval backend selector. Only `chroma` exists today (`opensearch` is a planned future backend for the Logmanager wiki corpus — see [ADR-multi-corpus-profiles-and-pluggable-store.md](ADR-multi-corpus-profiles-and-pluggable-store.md)). Adding this key is behavior-preserving; omitting it also defaults to `chroma`. |
 | `collection_name` | `obsidian_markdown` | ChromaDB collection name. |
 | `exclude_dirs` | see above | Vault subdirectories to skip during indexing. `Resources/Generated` holds auto-generated catalog stubs (Resource Notes, Topic MOCs, Learning Paths) whose underlying book/resource content is already fully indexed via `json_sources`. |
@@ -85,7 +117,34 @@ extractor:
 | `rerank_fetch_k` | `20` | Dense candidate pool retrieved before reranking down to `n_results`. |
 | `rerank_default` | `false` (this profile) | Whether `rag-query` / `make eval` / `POST /query` / `POST /answer` rerank when the caller says nothing. **Per-profile, because the cross-encoder is corpus-dependent** — measured 2026-07-27 it *loses* overall recall@5 on the personal corpus (0.911 → 0.844), so it is off here and on in `config.logmanager.yaml`. Override per call: `rag-query --rerank` / `--no-rerank`, or `"rerank": true\|false` in the request body. Absent from a config ⇒ falls back to `true` (pre-2026-07-27 behaviour). See CLAUDE.md roadmap item 5. |
 | `tag_fetch_k` | `200` | Dense pool floor when a `--tag` filter is active (tags are post-filtered — see roadmap item 7). Only applies when tags are supplied. |
-| `generation` | *(absent)* | Optional block enabling the `/answer` RAG endpoint. Absent ⇒ `/answer` returns `503`, `/query` unaffected. Sub-keys: `provider` (`anthropic`\|`openai`), `model` (required), `max_tokens` (`1024`), `temperature` (`0.0`), `timeout` (`60`), `api_key_env` (provider default: `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`), `base_url` (optional; OpenAI-compat servers). The API **key** is read from the env var named by `api_key_env`, never from this file. See [api.md](api.md#enabling-answer-generation). |
+| `generation` | *(absent)* | Optional block enabling the `/answer` RAG endpoint. Absent ⇒ `/answer` returns `503`, `/query` unaffected. Sub-keys: `provider` (`anthropic`\|`openai`), `model` (required), `max_tokens` (`1024`), `temperature` (`0.0`), `timeout` (`60`), `api_key_env` (provider default: `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`), `base_url` (optional; OpenAI-compat servers). The API **key** is read from the env var named by `api_key_env`, never from this file. A `base_url` is validated as egress: remote hosts must be `https`, plain `http` is allowed only for a local inference server (localhost). An *invalid* generation block (unknown provider, insecure `base_url`, missing model) fails the server at startup; a *disabled* one (no block / no key) just makes `/answer` return 503. See [api.md](api.md#enabling-answer-generation). |
+| `api` | *(defaults)* | Optional block for the HTTP backend. Sub-keys: `host` (`0.0.0.0`), `port` (`8000`), `inference_concurrency` (`1`) — bounds concurrent embed/rerank work so the Jetson's shared 8 GB is not exhausted; a request that can't get a slot gets `503`. `jwt_audience` / `jwt_issuer` (optional) — when set, the API enforces the `aud`/`iss` claims on every token (also settable via `RAG_API_JWT_AUDIENCE`/`RAG_API_JWT_ISSUER`). |
+
+**API authorization scopes.** Tokens may carry a `scopes` claim (`query`,
+`answer`, `index`) to restrict a credential to specific routes — mint one with
+`rag-token --scope query`. A token with **no** `scopes` claim keeps full access,
+so existing service tokens are unaffected. The reranker is only preloaded at
+startup when `rerank_default` is true (the personal profile skips it); a request
+that forces `rerank=true` loads it lazily. `rag-token`'s default lifetime is now
+30 days (was 3650) — pass `--expires-days` for longer-lived service tokens.
+
+### Pipeline coordinator
+
+`rag-pipeline` is the single orchestration layer for extractor stages. It loads
+the selected typed profile, resolves paths once, models stage dependencies and
+outputs, and invokes the existing extractor modules with fixed argument arrays.
+The individual `rag-extract` / `rag-enrich` / `rag-build-*` commands remain
+available for compatibility.
+
+```bash
+rag-pipeline --dry-run                 # full plan and current output status
+rag-pipeline --stage build-sqlite      # selected stage plus dependencies
+rag-pipeline --stage enrich --no-deps  # only the requested stage
+rag-pipeline --list-stages
+```
+
+Local, Docker, and Jetson Make targets all delegate to this coordinator, so
+`RAG_CONFIG_PATH` and environment path overrides are honored consistently.
 
 ### The `extractor:` block
 
@@ -124,6 +183,9 @@ Override any path without editing `config.yaml`. Copy `.env.example` to `.env` �
 | `RAG_API_JWT_SECRET` | — (API only) | HS256 shared secret for the backend API (`rag-serve` / `rag-token`). **Required** to serve — protected routes return 500 if unset; no default. Use a strong secret (≥32 bytes; PyJWT warns on short keys). Only the API server needs it. |
 | `RAG_API_HOST` | — (API only) | Bind address for the API server. Default `0.0.0.0`. |
 | `RAG_API_PORT` | — (API only) | Bind port for the API server. Default `8000`. |
+| `RAG_API_JWT_AUDIENCE` | `api.jwt_audience` | When set, the API enforces the token `aud` claim. |
+| `RAG_API_JWT_ISSUER` | `api.jwt_issuer` | When set, the API enforces the token `iss` claim. |
+| `RAG_OFFLINE` | `offline` | When set, forces offline model loading (`HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE`). |
 | `RAG_BOOKS_PATH` | `extractor.books_path` | Extractor pipeline only. |
 | `RAG_RESOURCES_PATH` | `extractor.resources_path` | Extractor pipeline only. |
 | `RAG_CATALOG_PATH` | `extractor.catalog_path` | Extractor pipeline only. |
@@ -149,10 +211,12 @@ RAG_PDF_RESOURCES_PATH=/Users/you/Documents/personal_knowledge/Resources/
 RAG_JSON_PATH=/Users/you/Documents/knowledge-base-index/indexed
 ```
 
-**Set `RAG_JSON_PATH` too.** A missing `RAG_VAULT_PATH`/`RAG_JSON_PATH` pair is what
-caused the 2026-07-15 index wipe on the Jetson (see CLAUDE.md). The indexer now
-refuses to prune when *every* source is empty, but a partially broken mount still
-prunes normally.
+**Set `RAG_JSON_PATH` too.** A missing `RAG_VAULT_PATH`/`RAG_JSON_PATH` pair caused
+the 2026-07-15 index wipe on the Jetson (see CLAUDE.md). Reconciliation is now
+source-scoped: missing, unreadable, degraded, disabled, and unexpectedly empty
+sources preserve their owned chunks while healthy sources reconcile independently.
+The all-sources-zero guard is an additional backstop. Verify the source census and
+do not use prune override flags to bypass an unexplained mount problem.
 
 Point these at **local disk**. Indexing a cloud-synced mirror (Google Drive,
 Dropbox) is unsupported — the vault copy there has a divergent history, and these

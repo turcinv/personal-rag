@@ -52,10 +52,11 @@ COPY tests/ ./tests/
 COPY scripts/ ./scripts/
 COPY config.yaml .env.example ./
 
-# Editable install must come AFTER src/ exists: this is a src-layout package,
-# so setuptools puts egg-info under src/ and errors out if the dir is missing.
-# --no-build-isolation reuses the setuptools installed above as the backend.
-RUN pip install --no-cache-dir -e . --no-deps --no-build-isolation
+# Regular (non-editable) install so the deployed image ships an installed
+# package, not a live link to the source tree. --no-build-isolation reuses the
+# setuptools installed above as the backend; --no-deps because
+# requirements-jetson.txt already pinned everything (and torch came first).
+RUN pip install --no-cache-dir . --no-deps --no-build-isolation
 
 ENV HF_HOME=/data/hf-cache
 ENV TRANSFORMERS_CACHE=/data/hf-cache

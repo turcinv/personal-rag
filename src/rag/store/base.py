@@ -47,28 +47,27 @@ class RetrievalStore(Protocol):
         """
         ...
 
-    def snapshot(self) -> dict:
-        """Return the full ``{chunk_id: metadata}`` map currently stored.
-
-        Used by the incremental indexer to classify every candidate chunk as
-        new / metadata-changed / unchanged without a second round-trip.
-        """
+    def read_index_state(self) -> Optional[dict]:
+        """Return persisted provenance/generation state, or ``None`` for legacy."""
         ...
 
-    def existing_ids(self) -> set:
-        """Return the set of chunk IDs currently stored.
+    def write_index_state(self, state: dict) -> None:
+        """Persist backend-owned provenance/generation state atomically."""
+        ...
 
-        Must reflect the same population as :meth:`count`. Provided for
-        ID-only callers; the incremental indexer's 0-files anti-wipe guard
-        derives its ID set from :meth:`snapshot` instead.
+    def iter_metadata(self, page_size: int = 5_000):
+        """Yield ``(chunk_id, metadata)`` in bounded backend pages.
+
+        Index reconciliation consumes this stream into a temporary disk-backed
+        catalog before any writes begin. Implementations must not materialize
+        the full collection in Python memory.
         """
         ...
 
     def iter_records(self):
         """Yield ``(chunk_id, document, metadata)`` for every stored chunk.
 
-        The full-fidelity counterpart to :meth:`snapshot` (which returns
-        metadata only): this also carries the chunk *text*, so an auxiliary
+        The full-fidelity counterpart to :meth:`iter_metadata`: this also carries the chunk *text*, so an auxiliary
         lexical index (``rag.lexical.LexicalIndex``) can be built from what is
         already indexed without re-chunking or re-embedding. Implementations
         should page internally rather than materialize the whole corpus at once

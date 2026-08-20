@@ -9,11 +9,11 @@ open a store instead of importing a backend client library directly.
 """
 
 from .base import RetrievalStore
-from .chroma_store import ChromaStore
+from .chroma_store import ChromaStore, compile_where
 from . import chroma_store as _chroma
 
 __all__ = [
-    "RetrievalStore", "ChromaStore", "get_store",
+    "RetrievalStore", "ChromaStore", "get_store", "compile_where",
     "list_collection_names", "drop_collection",
 ]
 

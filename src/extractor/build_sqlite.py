@@ -23,10 +23,11 @@ import argparse
 import json
 import os
 import sqlite3
+import tempfile
 
 
 SCHEMA = """
-PRAGMA journal_mode = WAL;
+PRAGMA journal_mode = DELETE;
 
 DROP TABLE IF EXISTS documents;
 CREATE TABLE documents (
@@ -91,6 +92,127 @@ CREATE INDEX IF NOT EXISTS idx_doc_tags_tag       ON doc_tags(tag_id);
 """
 
 
+def _validate_database(path):
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        check = connection.execute("PRAGMA quick_check").fetchone()[0]
+        if check != "ok":
+            raise RuntimeError(f"SQLite quick_check failed: {check}")
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+            )
+        }
+        required = {"documents", "documents_fts", "tags", "doc_tags"}
+        if not required <= tables:
+            raise RuntimeError(
+                f"SQLite database missing tables: {sorted(required - tables)}"
+            )
+        documents = connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+        fts_documents = connection.execute(
+            "SELECT COUNT(*) FROM documents_fts"
+        ).fetchone()[0]
+        if documents != fts_documents:
+            raise RuntimeError(
+                f"SQLite document/FTS count mismatch: {documents} != {fts_documents}"
+            )
+        tags = connection.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
+        topics = connection.execute(
+            "SELECT COUNT(DISTINCT primary_topic) FROM documents"
+        ).fetchone()[0]
+        return int(documents), int(tags), int(topics)
+    finally:
+        connection.close()
+
+
+def _remove_sqlite_files(path):
+    for suffix in ("", "-wal", "-shm"):
+        candidate = path + suffix
+        if os.path.exists(candidate):
+            os.remove(candidate)
+
+
+def build_database(jsonl_paths, destination):
+    """Build, validate, and atomically replace one whole-document FTS database."""
+    destination = os.path.abspath(os.fspath(destination))
+    if os.path.islink(destination):
+        raise RuntimeError(
+            f"Refusing to replace SQLite compatibility symlink: {destination}"
+        )
+    parent = os.path.dirname(destination) or "."
+    os.makedirs(parent, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{os.path.basename(destination)}.", suffix=".tmp", dir=parent
+    )
+    os.close(descriptor)
+    os.remove(temporary)
+
+    try:
+        conn = sqlite3.connect(temporary)
+        try:
+            conn.executescript(SCHEMA)
+            cur = conn.cursor()
+            tag_ids = {}
+            for jsonl_path in jsonl_paths:
+                with open(jsonl_path, encoding="utf-8") as handle:
+                    for line in handle:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        record = json.loads(line)
+                        extraction = record.get("extraction", {}) or {}
+                        cur.execute(
+                            """INSERT OR REPLACE INTO documents VALUES
+                               (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (
+                                record.get("id"), record.get("file_name"), record.get("file_type"),
+                                record.get("source_group"), record.get("source_bucket"), record.get("gcs_path"),
+                                record.get("file_size_bytes"), record.get("title"), record.get("author"),
+                                record.get("language"), record.get("isbn"), record.get("page_count"), record.get("resource_type"),
+                                record.get("primary_topic"), json.dumps(record.get("secondary_topics", [])),
+                                record.get("skill_level"), json.dumps(record.get("tags", [])),
+                                record.get("confidence"), record.get("classification_status"),
+                                record.get("classified_at"), extraction.get("extracted_at"),
+                                extraction.get("total_pages"), extraction.get("total_documents"),
+                                extraction.get("text_layer_chars"), 1 if extraction.get("ocr_used") else 0,
+                                extraction.get("ocr_page_count"), extraction.get("ocr_chars"),
+                                extraction.get("total_chars"), record.get("text", ""),
+                            ),
+                        )
+                        document_id = record.get("id")
+                        for tag in record.get("tags", []) or []:
+                            if tag not in tag_ids:
+                                cur.execute("INSERT OR IGNORE INTO tags(tag) VALUES (?)", (tag,))
+                                cur.execute("SELECT tag_id FROM tags WHERE tag = ?", (tag,))
+                                tag_ids[tag] = cur.fetchone()[0]
+                            cur.execute(
+                                "INSERT OR IGNORE INTO doc_tags(doc_id, tag_id) VALUES (?,?)",
+                                (document_id, tag_ids[tag]),
+                            )
+
+            cur.execute(
+                "INSERT INTO documents_fts(rowid, title, tags, text) "
+                "SELECT rowid, title, tags, text FROM documents"
+            )
+            conn.executescript(INDEXES)
+            conn.execute("PRAGMA optimize")
+            conn.commit()
+        finally:
+            conn.close()
+
+        documents, tags, topics = _validate_database(temporary)
+        os.replace(temporary, destination)
+        for suffix in ("-wal", "-shm"):
+            stale = destination + suffix
+            if os.path.exists(stale):
+                os.remove(stale)
+        return documents, tags, topics
+    except Exception:
+        _remove_sqlite_files(temporary)
+        raise
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--jsonl", required=True, action="append", dest="jsonl_paths",
@@ -99,73 +221,11 @@ def main():
     ap.add_argument("--db", required=True)
     args = ap.parse_args()
 
-    if os.path.exists(args.db):
-        os.remove(args.db)
-    for ext in ("-wal", "-shm"):
-        if os.path.exists(args.db + ext):
-            os.remove(args.db + ext)
-
-    conn = sqlite3.connect(args.db)
-    conn.executescript(SCHEMA)
-    cur = conn.cursor()
-
-    tag_ids = {}
-    n = 0
-    for jsonl_path in args.jsonl_paths:
-        with open(jsonl_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                r = json.loads(line)
-                ext = r.get("extraction", {}) or {}
-                cur.execute(
-                    """INSERT OR REPLACE INTO documents VALUES
-                       (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        r.get("id"), r.get("file_name"), r.get("file_type"),
-                        r.get("source_group"), r.get("source_bucket"), r.get("gcs_path"),
-                        r.get("file_size_bytes"), r.get("title"), r.get("author"),
-                        r.get("language"), r.get("isbn"), r.get("page_count"), r.get("resource_type"),
-                        r.get("primary_topic"), json.dumps(r.get("secondary_topics", [])),
-                        r.get("skill_level"), json.dumps(r.get("tags", [])),
-                        r.get("confidence"), r.get("classification_status"),
-                        r.get("classified_at"), ext.get("extracted_at"),
-                        ext.get("total_pages"), ext.get("total_documents"),
-                        ext.get("text_layer_chars"), 1 if ext.get("ocr_used") else 0,
-                        ext.get("ocr_page_count"), ext.get("ocr_chars"),
-                        ext.get("total_chars"), r.get("text", ""),
-                    ),
-                )
-                doc_id = r.get("id")
-                for tag in r.get("tags", []) or []:
-                    if tag not in tag_ids:
-                        cur.execute("INSERT OR IGNORE INTO tags(tag) VALUES (?)", (tag,))
-                        cur.execute("SELECT tag_id FROM tags WHERE tag = ?", (tag,))
-                        tag_ids[tag] = cur.fetchone()[0]
-                    cur.execute(
-                        "INSERT OR IGNORE INTO doc_tags(doc_id, tag_id) VALUES (?,?)",
-                        (doc_id, tag_ids[tag]),
-                    )
-                n += 1
-
-    # Populate the FTS index from the base table.
-    cur.execute(
-        "INSERT INTO documents_fts(rowid, title, tags, text) "
-        "SELECT rowid, title, tags, text FROM documents"
+    documents, tags, topics = build_database(args.jsonl_paths, args.db)
+    print(
+        f"Built {args.db}: {documents} documents, {tags} distinct tags, "
+        f"{topics} primary topics"
     )
-    conn.executescript(INDEXES)
-    conn.commit()
-
-    # Quick stats.
-    docs = cur.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-    tags = cur.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
-    topics = cur.execute(
-        "SELECT COUNT(DISTINCT primary_topic) FROM documents"
-    ).fetchone()[0]
-    conn.execute("PRAGMA optimize")
-    conn.close()
-    print(f"Built {args.db}: {docs} documents, {tags} distinct tags, {topics} primary topics")
 
 
 if __name__ == "__main__":

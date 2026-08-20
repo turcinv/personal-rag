@@ -17,11 +17,11 @@ everything.
 
 Usage: rag-extract [directory] [filename] [--force]
 """
+import argparse
 import json
 import os
 import re
 import subprocess
-import sys
 import tempfile
 import time
 import zipfile
@@ -255,53 +255,64 @@ def _cached_extraction_ok(out_path):
 def main():
     global _log_path
 
-    # Strip --force/-f up front so it isn't mistaken for the directory or the
-    # single-file target in the positional parsing below.
-    force = False
-    for flag in ("--force", "-f"):
-        if flag in sys.argv[1:]:
-            force = True
-            sys.argv = [a for a in sys.argv if a != flag]
+    parser = argparse.ArgumentParser(
+        prog="rag-extract",
+        description="Extract PDF, EPUB, Markdown, and text files into JSON.",
+    )
+    parser.add_argument("directory", nargs="?", default=os.getcwd())
+    parser.add_argument("filename", nargs="?")
+    parser.add_argument("--force", "-f", action="store_true")
+    parser.add_argument(
+        "--out",
+        help="Output directory (default: <directory>/text_output)",
+    )
+    parser.add_argument(
+        "--log",
+        dest="log_path",
+        help="Progress log path (default: <directory>/extract_progress.log)",
+    )
+    args = parser.parse_args()
 
-    # First CLI arg may be the target directory.
-    if len(sys.argv) > 1 and os.path.isdir(sys.argv[1]):
-        DIR = os.path.abspath(sys.argv[1])
-        sys.argv.pop(1)
-    elif len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
-        print("Usage: rag-extract [directory] [filename] [--force]")
-        sys.exit(0)
-    else:
-        DIR = os.getcwd()
+    directory = os.path.abspath(os.path.expanduser(args.directory))
+    if not os.path.isdir(directory):
+        parser.error(f"source directory does not exist: {directory}")
+    out_dir = os.path.abspath(
+        os.path.expanduser(args.out or os.path.join(directory, "text_output"))
+    )
+    _log_path = os.path.abspath(
+        os.path.expanduser(
+            args.log_path or os.path.join(directory, "extract_progress.log")
+        )
+    )
 
-    OUT_DIR = os.path.join(DIR, "text_output")
-    _log_path = os.path.join(DIR, "extract_progress.log")
-
-    os.makedirs(OUT_DIR, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
+    log_parent = os.path.dirname(_log_path)
+    if log_parent:
+        os.makedirs(log_parent, exist_ok=True)
     open(_log_path, "w").close()
 
     skip = {"extract_text.py", "analyze_files.py"}
     files = sorted(
-        f for f in os.listdir(DIR)
-        if os.path.isfile(os.path.join(DIR, f)) and not f.startswith(".")
+        f for f in os.listdir(directory)
+        if os.path.isfile(os.path.join(directory, f)) and not f.startswith(".")
         and f not in skip and not f.endswith((".csv", ".log", ".py"))
     )
 
-    # Optional second arg: process only one named file.
-    if len(sys.argv) > 1:
-        target = sys.argv[1]
+    if args.filename:
+        target = args.filename
         files = [f for f in files if f == target or f == os.path.basename(target)]
         if not files:
-            log(f"No matching file for '{sys.argv[1]}'")
+            log(f"No matching file for '{target}'")
             return
 
     manifest = []
     total = len(files)
-    log(f"Starting extraction of {total} file(s) from {DIR}")
+    log(f"Starting extraction of {total} file(s) from {directory}")
     for idx, fname in enumerate(files, 1):
-        path = os.path.join(DIR, fname)
+        path = os.path.join(directory, fname)
         out_name = os.path.splitext(fname)[0] + ".json"
-        out_path = os.path.join(OUT_DIR, out_name)
-        if not force and os.path.exists(out_path):
+        out_path = os.path.join(out_dir, out_name)
+        if not args.force and os.path.exists(out_path):
             if _cached_extraction_ok(out_path):
                 log(f"({idx}/{total}) SKIP already extracted: {fname}")
                 manifest.append({"filename": fname, "status": "cached"})
@@ -342,7 +353,7 @@ def main():
         ocr_note = f" OCR:{meta['ocr_page_count']}pg/{meta['ocr_chars']}ch" if meta["ocr_used"] else ""
         log(f"({idx}/{total}) OK {ftype} {fname} -> {meta['total_chars']} chars{ocr_note} ({time.time()-t0:.1f}s)")
 
-    with open(os.path.join(OUT_DIR, "manifest.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
     ocr_files = [m for m in manifest if m.get("ocr_used")]
     log(f"DONE. {len(manifest)} files. OCR used on {len(ocr_files)} file(s).")

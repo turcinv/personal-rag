@@ -208,6 +208,9 @@ def main():
             if changed:
                 changes.append({"file_name": fname, **changed})
 
+    out_parent = os.path.dirname(os.path.abspath(args.out))
+    if out_parent:
+        os.makedirs(out_parent, exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
         for r in out_records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")

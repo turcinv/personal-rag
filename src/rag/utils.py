@@ -19,84 +19,26 @@ os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 import posthog as _posthog
 _posthog.capture = lambda *a, **kw: None  # chromadb 0.6.x / posthog 7.x signature mismatch
 
-import yaml
-
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
-
-def _find_config() -> Path:
-    """Locate config.yaml: RAG_CONFIG_PATH env var → cwd → package root."""
-    if cfg_env := os.environ.get("RAG_CONFIG_PATH"):
-        return Path(cfg_env)
-    cwd_cfg = Path.cwd() / "config.yaml"
-    if cwd_cfg.exists():
-        return cwd_cfg
-    # Editable install: src/rag/utils.py → ../../../ = project root
-    return Path(__file__).resolve().parent.parent.parent / "config.yaml"
-
-
-def load_config() -> dict:
-    """Load config.yaml and apply environment variable overrides.
-
-    RAG indexer overrides:
-        RAG_VAULT_PATH          overrides vault_path
-        RAG_PDF_BOOKS_PATH      overrides pdf_sources entry with type=book
-        RAG_PDF_RESOURCES_PATH  overrides pdf_sources entry with type=resource
-        RAG_JSON_PATH           overrides json_sources to a single directory
-        RAG_INDEX_PATH          overrides index_path (ChromaDB storage dir)
-        RAG_CONFIG_PATH         overrides the config.yaml location itself
-
-    Extractor pipeline overrides (config.extractor.*):
-        RAG_BOOKS_PATH          overrides extractor.books_path
-        RAG_RESOURCES_PATH      overrides extractor.resources_path
-        RAG_CATALOG_PATH        overrides extractor.catalog_path
-        RAG_OUTPUT_PATH         overrides extractor.output_path
-        RAG_OBSIDIAN_NOTES_PATH overrides extractor.obsidian_notes_path
-        RAG_MOCS_PATH           overrides extractor.mocs_path
-    """
-    config_path = _find_config()
-    with open(config_path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-
-    # RAG indexer overrides.
-    if vault := os.environ.get("RAG_VAULT_PATH"):
-        cfg["vault_path"] = vault
-    if books := os.environ.get("RAG_PDF_BOOKS_PATH"):
-        for src in cfg.get("pdf_sources", []):
-            if src.get("type") == "book":
-                src["path"] = books
-    if resources := os.environ.get("RAG_PDF_RESOURCES_PATH"):
-        for src in cfg.get("pdf_sources", []):
-            if src.get("type") == "resource":
-                src["path"] = resources
-    if json_path := os.environ.get("RAG_JSON_PATH"):
-        cfg["json_sources"] = [{"path": json_path}]
-    if index := os.environ.get("RAG_INDEX_PATH"):
-        cfg["index_path"] = index
-
-    # Extractor pipeline overrides.
-    ext = cfg.setdefault("extractor", {})
-    if v := os.environ.get("RAG_BOOKS_PATH"):
-        ext["books_path"] = v
-    if v := os.environ.get("RAG_RESOURCES_PATH"):
-        ext["resources_path"] = v
-    if v := os.environ.get("RAG_CATALOG_PATH"):
-        ext["catalog_path"] = v
-    if v := os.environ.get("RAG_OUTPUT_PATH"):
-        ext["output_path"] = v
-    if v := os.environ.get("RAG_OBSIDIAN_NOTES_PATH"):
-        ext["obsidian_notes_path"] = v
-    if v := os.environ.get("RAG_MOCS_PATH"):
-        ext["mocs_path"] = v
-
-    return cfg
+from .config import RagConfig, load_config
 
 
 _LOG_CONFIGURED = False
+
+
+def apply_offline_mode(config=None) -> bool:
+    """Enforce fully-offline model loading when configured.
+
+    When ``offline: true`` in config (or ``RAG_OFFLINE`` is set), export the
+    Hugging Face offline flags so ``SentenceTransformer``/``CrossEncoder`` load
+    only from the local cache and never reach the network — a cold cache then
+    fails fast instead of silently downloading. Idempotent; returns whether
+    offline mode is active. Explicit pre-set env values are left untouched.
+    """
+    offline = bool((config or {}).get("offline")) or bool(os.environ.get("RAG_OFFLINE"))
+    if offline:
+        for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+            os.environ.setdefault(var, "1")
+    return offline
 
 
 class _SQLiteHandler(logging.Handler):
@@ -104,9 +46,12 @@ class _SQLiteHandler(logging.Handler):
 
     Columns: id, ts (local time), level, logger, message. logging serializes
     emit() with the handler lock, so a single shared connection is safe.
+
+    ``retention_days`` prunes rows older than that many days on startup so the
+    structured log cannot grow without bound on a long-lived server (0 disables).
     """
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, retention_days: int = 30):
         super().__init__()
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.execute(
@@ -115,6 +60,12 @@ class _SQLiteHandler(logging.Handler):
             "ts TEXT NOT NULL, level TEXT NOT NULL, "
             "logger TEXT NOT NULL, message TEXT NOT NULL)"
         )
+        if retention_days and retention_days > 0:
+            cutoff = time.strftime(
+                "%Y-%m-%d %H:%M:%S",
+                time.localtime(time.time() - retention_days * 86400),
+            )
+            self._conn.execute("DELETE FROM logs WHERE ts < ?", (cutoff,))
         self._conn.commit()
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -184,8 +135,9 @@ def setup_logging(config: dict | None = None, console: bool = True) -> logging.L
     ).expanduser()
     try:
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.addHandler(_SQLiteHandler(db_path))
-    except (OSError, sqlite3.Error) as exc:
+        retention_days = int(cfg.get("log_retention_days", 30))
+        logger.addHandler(_SQLiteHandler(db_path, retention_days=retention_days))
+    except (OSError, sqlite3.Error, ValueError) as exc:
         logger.warning("SQLite logging disabled (%s): %s", db_path, exc)
 
     _LOG_CONFIGURED = True

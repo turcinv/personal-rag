@@ -17,6 +17,7 @@ from .base import (
     AnswerResult,
     GenerationError,
     build_prompt,
+    validate_egress_url,
 )
 
 logger = logging.getLogger("rag")
@@ -51,7 +52,7 @@ class OpenAIGenerator:
         self._max_tokens = max_tokens
         self._temperature = temperature
         self._timeout = timeout
-        self._base_url = base_url.rstrip("/")
+        self._base_url = validate_egress_url(base_url)
         self._system_prompt = system_prompt
         self._client = client
 
@@ -96,9 +97,12 @@ class OpenAIGenerator:
             raise GenerationError(f"OpenAI request failed: {exc}") from exc
 
         if resp.status_code >= 400:
-            raise GenerationError(
-                f"OpenAI API returned {resp.status_code}: {resp.text[:500]}"
+            # Provider error body is logged server-side only, never raised to the
+            # client (it can echo the prompt / leak provider detail).
+            logger.warning(
+                "OpenAI API error %s: %s", resp.status_code, resp.text[:500]
             )
+            raise GenerationError(f"OpenAI API returned {resp.status_code}")
 
         try:
             body = resp.json()

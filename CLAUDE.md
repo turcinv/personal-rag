@@ -445,18 +445,25 @@ Summary, ranked by impact/effort — do these in order, and build the eval set (
 | [docs/configuration.md](docs/configuration.md) | All config fields, env var overrides, hardware tuning table, config profiles |
 | [docs/jetson.md](docs/jetson.md) | Jetson-specific install, Docker, memory budget, IPC constraints, reranker cache prep |
 | [docs/api.md](docs/api.md) | HTTP backend: endpoints, JWT auth, `rag-serve`/`rag-token`, `make serve`/`jetson-serve`, client examples |
+| [docs/security.md](docs/security.md) | Egress/auth/privacy posture: one intentional outbound path, JWT scopes, offline mode, log retention, store integrity |
+| [docs/recovery.md](docs/recovery.md) | Writer lock model, quiesced backup + verified restore/drill, RPO/RTO, raw-source reindex fallback |
 | [docs/ADR-multi-corpus-profiles-and-pluggable-store.md](docs/ADR-multi-corpus-profiles-and-pluggable-store.md) | Design decision behind config profiles (Axis 1) + the pluggable `RetrievalStore` (Axis 2) |
 | [docs/OPENSEARCHSTORE_IMPLEMENTATION_PLAN.md](docs/OPENSEARCHSTORE_IMPLEMENTATION_PLAN.md) | Axis 3 — planned OpenSearch backend, where roadmap item 6 (hybrid BM25) lands. Not built |
 | [docs/archive/](docs/archive/) | Historical reports and completed plans. **Not current reference** — several contradict the code; see its README |
 
 ## Known drift and deferred work (audited 2026-07-28)
 
+> Much of the original drift was resolved by the repository-structure-hardening
+> work: CI now runs Python 3.10 **and** 3.12 with lint + coverage + wheel/entry-point
+> checks; artifact publication is atomic; index provenance, cross-process writer
+> locks, verified backup/restore, backend-neutral retrieval filters, and API
+> hardening (scopes, offline mode, egress validation, log retention, readiness)
+> are in place. The remaining items below are the still-open ones.
+
 Found during a full repo review, deliberately not fixed:
 
 - **`make install` cannot run `make test-unit`** — `pytest` is only in the `dev` extra,
-  which `--no-deps` skips. `uv pip install pytest` separately.
-- **CI covers Python 3.10 only**, not the 3.12 used for macOS development, and has no
-  lint or type-check step. `ci.yml`'s comment claims a `<3.11` pin that doesn't exist.
+  which `--no-deps` skips. `uv pip install pytest` separately (or `make install-dev`).
 - **Config profiles don't work in Docker** — both images copy only `config.yaml` and
   neither Compose file passes `RAG_CONFIG_PATH`. Axis 1 is host-venv-only.
 - **`config.logmanager.yaml`'s `vault_path` doesn't exist yet** (declared placeholder).

@@ -74,10 +74,12 @@ falls back to mounting `/tmp` (empty) and every source reports 0 files.
 already holds chunks (added after the 2026-07-15 wipe, in which 172,557 chunks were
 pruned this way). You no longer need to race it manually.
 
-The guard does **not** cover a *partially* broken mount — one source missing while
-others are fine is indistinguishable from a legitimate deletion and will prune. So
-still check the startup log's per-source file counts. The guard also cannot fire on
-an already-empty index, so a fresh profile pointed at a bad path "succeeds" silently.
+**Index deletion is source-scoped:** missing, unreadable, disabled, degraded, and
+unexpectedly empty sources preserve their owned chunks while healthy sources reconcile
+independently. The all-sources-zero `RuntimeError` remains an additional backstop.
+Still check the startup census: do not bypass an unexplained mount issue with
+`--allow-empty-source-prune` or `--allow-large-prune`. The guard cannot fire on an
+already-empty index, so a fresh profile pointed at bad paths can still "succeed" empty.
 
 ## Testing instructions
 
@@ -86,14 +88,19 @@ make test-unit             # offline pytest suite — no index, no data, no netw
 make test [K=keyword]      # retrieval smoke tests against a populated index (tests/test_queries.py)
 ```
 
-`make test-unit` collects nine files and ~163 tests covering chunking, both
-extractor packages, the incremental indexing engine, the store seam + config
-profiles, the `search()` seam, the eval harness, the generation layer, and the HTTP
-API. It is fully offline: the API tests inject a fake state via
-`dependency_overrides`, generation uses an `httpx.MockTransport`, and the store tests
-run a real `ChromaStore` over a temp dir. `tests/test_queries.py` is excluded from
-collection (`tests/conftest.py`) because it needs a populated index and a real model
-download.
+`make test-unit` collects 25 files and ~360 tests covering chunking, both
+extractor packages, the incremental indexing engine, the disk-backed
+reconciliation catalog, atomic artifact publication + generation-aware sync,
+index provenance + lexical freshness, cross-process writer locking, backup/restore,
+the store seam + config profiles, backend-neutral retrieval filters, the
+`search()` seam, the eval harness, the generation layer + egress hardening, the
+HTTP API (auth/scopes/readiness), offline mode + log retention, and an
+end-to-end workflow (`tests/test_end_to_end.py`). It is fully offline: the API
+tests inject a fake state via `dependency_overrides`, generation uses an
+`httpx.MockTransport`, and the store/backup/e2e tests run a real `ChromaStore`
+over a temp dir with a fake embedding model. `tests/test_queries.py` is excluded
+from collection (`tests/conftest.py`) because it needs a populated index and a
+real model download.
 
 **`pytest` is not in the lockfile** — `make install` uses `--no-deps`, so the `dev`
 extra is skipped and a fresh venv cannot run the suite. Install it separately
@@ -134,13 +141,13 @@ JetPack 6.2 ships 3.10, not 3.12 — do not use 3.11+-only syntax).
   `markdown_workers`, `pdf_workers` small (see `docs/jetson.md`); don't use
   `encode_multi_process` on Jetson (NvSCI IPC, not CUDA IPC — it fails).
 - See `CLAUDE.md` → "Known Limitations & Improvement Roadmap" before assuming the
-  current retrieval design is the intended end state. As of 2026-07-28 items 1, 3, 4,
-  5 and 7 are **done** (triple-collection scheme removed; eval set built;
-  heading-aware chunking; cross-encoder rerank; tag/status filters), item 2 is
-  resolved as *rejected* (two stronger embedding models both net-regressed on this
-  corpus — MiniLM kept), and **item 6 (BM25/lexical hybrid) is the one open gap** —
-  specced in `docs/OPENSEARCHSTORE_IMPLEMENTATION_PLAN.md`, where it comes free with
-  the backend.
+  current retrieval design is the intended end state. Items 1, 3, 4, 5, 6 and 7 are
+  **done** (triple-collection scheme removed; eval set built; heading-aware
+  chunking; cross-encoder rerank; tag/status filters; client-side BM25/RRF hybrid
+  built and measured — recall-neutral on this corpus, off by default), and item 2
+  is resolved as *rejected* (two stronger embedding models both net-regressed on
+  this corpus — MiniLM kept). The native `hybrid=True` path still lands with the
+  planned OpenSearch backend (`docs/OPENSEARCHSTORE_IMPLEMENTATION_PLAN.md`).
 - **Reranking is per-profile, and off on the personal corpus.** `search()` always
   defaults to `rerank=False`; callers resolve the profile default through
   `query.rerank_default(config)` (absent key ⇒ `True`). Measured 2026-07-27, rerank

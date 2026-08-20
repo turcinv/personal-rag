@@ -30,12 +30,54 @@ class GenerationError(RuntimeError):
 class GenerationConfigError(ValueError):
     """Raised at construction when generation is misconfigured.
 
-    Two distinct causes: an unknown ``provider`` (a typo — a hard error), or a
-    missing API-key env var (an expected "not wired up here" state). The API
-    lifespan catches the missing-key case and serves ``/query`` normally while
-    ``/answer`` returns 503; an unknown provider is a real config bug and
-    surfaces loudly.
+    The base class covers *invalid* configuration — a real bug the operator must
+    fix (unknown ``provider``, a ``model`` missing while a provider is set, an
+    insecure/off-allowlist ``base_url``). The API lifespan lets these propagate
+    so the server fails loudly rather than silently degrading.
     """
+
+
+class GenerationDisabledError(GenerationConfigError):
+    """Raised when generation is simply *not wired up* on this deployment.
+
+    Distinct from an invalid config: no ``generation`` block, no ``provider``, or
+    a missing API-key env var. The API lifespan catches THIS subclass, keeps
+    ``/query`` fully working, and returns 503 from ``/answer``. Because it is a
+    subclass of :class:`GenerationConfigError`, callers/tests that catch the base
+    class still behave as before.
+    """
+
+
+# Hosts allowed to receive generation egress without HTTPS (local inference
+# servers such as ollama / llama.cpp / vLLM on the same machine).
+_LOCAL_EGRESS_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+
+def validate_egress_url(base_url: str) -> str:
+    """Validate a generation ``base_url`` before any request is sent.
+
+    Generation is the one intentional outbound path in this system, so every
+    destination is checked: the scheme must be ``http``/``https``, a host must be
+    present, and plain ``http`` is allowed ONLY for local inference servers
+    (localhost). A remote ``http`` URL is rejected so credentials and prompt text
+    are never sent in clear text. Returns the normalized URL (trailing ``/``
+    stripped) or raises :class:`GenerationConfigError`.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise GenerationConfigError(
+            f"Invalid generation base_url {base_url!r}: expected an http(s) URL "
+            "with a host."
+        )
+    if parsed.scheme == "http" and parsed.hostname not in _LOCAL_EGRESS_HOSTS:
+        raise GenerationConfigError(
+            f"Refusing insecure generation base_url {base_url!r}: plain http is "
+            "only allowed for a local inference server (localhost). Use https for "
+            "a remote provider."
+        )
+    return base_url.rstrip("/")
 
 
 # Grounding contract shared by both providers. Kept deliberately strict: answer

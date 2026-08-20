@@ -30,8 +30,9 @@ one function — `query.search()`:
                     query.search()
                              │
                   ┌──────────┴───────────┐
-                  │  build_where() →     │  native filters: domain, subdomain,
+                  │  RetrievalFilter →   │  neutral filters: domain, subdomain,
                   │  RetrievalStore.query│  type, source, confidence, status
+                  │  (store compiles)    │  (store builds backend syntax)
                   └──────────┬───────────┘
                              │  fetch_k candidates (widened for rerank/tags)
                              ▼
@@ -58,7 +59,7 @@ The indexer is split by responsibility:
 | `indexing.py` | The incremental engine — `embed_and_upsert`, `index_file_chunks` (new/update/skip), `preserve_existing`, and `run_source()` |
 | `indexer.py` | `main()` only — sets up the model/store, snapshots the index, runs every source, prunes stale chunks |
 | `store/` | The `RetrievalStore` Protocol + `ChromaStore`; the **only** place a backend client is imported |
-| `query.py` | `search()` — the single retrieval seam shared by the CLI, the API and the eval harness — plus `build_where()`, `rerank_default()` and the CLI |
+| `query.py` | `search()` — the single retrieval seam shared by the CLI, the API and the eval harness — plus `rerank_default()` and the CLI. The backend-neutral filter DTO lives in `retrieval.py`; the store compiles it |
 | `eval.py` | recall@5/@10 and MRR over `tests/eval/golden_queries.jsonl`, split per corpus |
 | `generation/` | Optional answer synthesis *above* `search()` — see [Answer generation](#answer-generation) |
 | `api/` | FastAPI backend — see [HTTP backend](#http-backend) |
@@ -123,39 +124,51 @@ but not built.
 
 The collection is opened with `get_or_create_collection` — never wiped. Each run:
 
-1. Snapshots the IDs **and metadata** already in the collection.
-2. For every chunk, records its ID as "seen" and then, since the ID is a hash of the body only:
+1. Pages existing IDs and metadata into a compact temporary SQLite reconciliation catalog before any mutations. The backend page and SQLite insertion buffers are fixed-size; no corpus-sized Python dictionary or ID set is retained.
+2. Submits at most the configured source worker count as extraction futures. Each completed file is classified against SQLite, embedded/upserted in small batches, and released before replacement work is queued. For every chunk:
    - **new ID** → embed + upsert;
    - **existing ID, metadata changed** → `collection.update` refreshes the metadata *without re-embedding* (embeddings depend only on the body, so a frontmatter or heading edit is cheap);
    - **existing ID, metadata identical** → skip.
-3. If a file's extraction *fails* (parse/read error), its already-indexed chunks are marked "seen" so they are preserved — a transient error never deletes good data. Files that legitimately become empty are not preserved and are pruned.
-4. After all sources are processed, deletes any indexed ID that was not seen this run — pruning chunks from edited files (old content) and from deleted files.
+3. If a file's extraction *fails* or unexpectedly returns no chunks, its already-indexed chunks are marked "seen" so a transient error never deletes good data; that source is marked degraded.
+4. Builds a source-scoped prune plan. Only sources that completed cleanly may delete their own unseen IDs. Missing, unreadable, disabled, degraded, unexpectedly empty, removed-from-config, and legacy/unowned chunks are preserved. Large deletions are blocked for review.
 
-Re-running on an unchanged vault embeds nothing. Editing only a note's frontmatter/heading updates metadata with no re-embedding. Changing `chunk_max_chars`/`chunk_overlap_chars` changes every chunk's text and therefore every ID, so the next run re-embeds everything and prunes the old chunks — effectively a clean rebuild.
+Re-running on an unchanged vault embeds nothing. Editing only a note's frontmatter/heading updates metadata with no re-embedding. Changing `chunk_max_chars`/`chunk_overlap_chars` changes every chunk's text and therefore every ID, so the next run proposes re-embedding and pruning the old chunks; deletion thresholds may require `--allow-large-prune` after review.
 
-### The 0-files anti-wipe guard
+### Source-scoped pruning and the 0-files backstop
 
-Step 4 above is the dangerous one: the engine cannot distinguish "every source
-was really deleted" from "the mounts are broken". A misconfigured `.env` on the
-Jetson once made every source report 0 files, and the prune step emptied the whole
-collection (172,557 chunks → 0).
+A misconfigured `.env` on the Jetson once made every source report 0 files, and the
+old global prune emptied the collection (172,557 chunks → 0). The indexer now records
+`source_id`, `source_kind`, and `file_id` ownership on every successfully seen chunk.
+Missing, unreadable, disabled, degraded, and unexpectedly empty sources preserve
+their ownership while healthy sources reconcile independently. Legacy chunks without
+ownership are also preserved until successfully seen again.
 
-`indexer.py:main()` now materialises and totals the source list **before** any
-embed or prune, and raises `RuntimeError` — pruning nothing — if every source
-reports 0 files while the index already holds chunks. The error names the config
-keys and env overrides to check.
+`indexer.py:main()` additionally raises `RuntimeError` if every source reports zero
+files while an existing index contains chunks. Preview decisions with
+`rag-index --dry-run`; completed mutating runs atomically write a per-source manifest.
+Deletion thresholds (`prune_max_fraction` and `prune_max_chunks`) require
+`--allow-large-prune` after review, and an intentional empty source also requires
+`--allow-empty-source-prune`. Never use those overrides to bypass an unexplained
+mount issue. An already-empty index has nothing for either guard to preserve.
 
-This closes the total-failure case only. A *partially* broken mount (one source
-missing, others fine) looks exactly like a legitimate deletion and will still
-prune, so the startup log's per-source file counts remain worth reading. Note also
-that the guard cannot fire when the index is *already* empty — a fresh profile
-pointed at a non-existent vault will "succeed" and create an empty collection.
+### Index provenance and model changes
 
-### Changing the embedding model → new collection name (required)
+Chunk IDs hash chunk **text**, not embedding vectors, so model or chunker changes
+cannot be inferred from IDs. Every collection now persists a fingerprint covering
+the embedding model/revision/dimension, normalization, chunker version and settings,
+metric, corpus/profile identity, and provenance schema. `rag-index`, `rag-query`, the
+API, MCP, and eval validate that fingerprint before incremental writes or serving;
+a mismatch fails with the differing fields instead of mixing vectors.
 
-Chunk IDs hash the chunk **text**, not the embedding vector. Swapping `embedding_model` does **not** change any chunk's text, so the incremental engine would see the existing IDs and *skip* re-embedding — silently leaving the old model's vectors in place under those IDs. Combined with a `chunk_max_chars` change (which re-IDs only chunks long enough to be split — short notes are returned whole and keep their ID), the same collection would end up with a **mix** of old- and new-model vectors, which are not comparable.
-
-The safe path, therefore, is a **new collection name that encodes the model**, set in `config.yaml`'s `collection_name`. A fresh (empty) collection has no existing IDs, so every chunk embeds from scratch with the new model; the old collection is left intact for rollback and can be deleted manually once the new one is validated. Convention: suffix the model, e.g. `obsidian_markdown_bge_small` for `BAAI/bge-small-en-v1.5`. Bump the suffix on every model change. (A documented full wipe-and-rebuild of the same collection would also work, but versioning the name is safer — it never risks a half-migrated collection and keeps the old vectors available to compare against.)
+Use a new collection name for a model/chunker migration so the old generation remains
+available for rollback. A legacy non-empty collection without provenance is rejected.
+After independently verifying exactly how it was built, it can be migrated once with
+`rag-index --adopt-index-provenance`; rebuilding into a new collection is safer.
+Indexer mutations advance a generation identifier before writes, so an interrupted run
+also makes the prior lexical sidecar stale. A successful no-op restores the previous
+generation; successful inserts, metadata changes, or deletes publish the new one.
+`rag-build-lexical` records that generation and provenance fingerprint, and hybrid
+retrieval refuses a missing or stale sidecar with an actionable rebuild error.
 
 Model history on this corpus (measured with the recall@k harness, `tests/eval/`): `obsidian_markdown` = `all-MiniLM-L6-v2` — **the shipped default**; `obsidian_markdown_bge_small` = `BAAI/bge-small-en-v1.5` and `obsidian_markdown_gte_small` = `thenlper/gte-small` were both tried and both **net-regressed** vs MiniLM (bge/gte helped resources but hurt the short vault-title queries that dominate the corpus) — not shipped. The prefix implementation was audited and confirmed correct, so the regression is the models themselves on this corpus, not a bug. MiniLM kept.
 
@@ -168,7 +181,7 @@ Query-side model prefixes: some retrieval models expect a short instruction prep
 retrieval. It:
 
 1. Embeds the query string with the same model (CPU — no device selection needed for a single inference), prepending `query_instruction` if the profile sets one
-2. Builds a backend-native `where` filter via `build_where()` from `domain`, `subdomain`, `type`, `source`, `confidence` and `status` — all native `$eq` clauses
+2. Takes a backend-neutral `RetrievalFilter` (`src/rag/retrieval.py`) carrying `domain`, `subdomain`, `type`, `source`, `confidence`, `status` and `tags`; the store compiles the scalar constraints into its own filter syntax (`rag.store.compile_where` builds Chroma's `$eq`/`$and` — the one place that syntax exists). Callers never construct store syntax. The legacy `build_where()` is a thin compat shim over the same compiler.
 3. Decides the candidate pool width, which is the part worth understanding:
    - plain: `n_results`
    - reranking: `rerank_fetch_k` (default 20)
@@ -179,6 +192,14 @@ retrieval. It:
 7. Returns records; the CLI prints them or dumps JSON (`--json`)
 
 ### Why tags are a post-filter
+
+Callers build a `RetrievalFilter` and never touch backend syntax; the store
+compiles it. The same filter through the CLI or `POST /query` compiles to an
+identical backend query. **Caller surfaces differ deliberately:** the CLI and the
+eval harness expose every filter plus `--hybrid`; `POST /query` and `POST /answer`
+expose the metadata filters and tags but not hybrid (dense-only, for predictable
+latency and because hybrid needs a built lexical sidecar); the MCP `search` tool
+is query-only (no filters, no hybrid) so host clients pass free-text questions.
 
 `status` is a native store filter. `tags` is not: tags are stored as a single
 comma-joined string because Chroma's array support is weak, so they cannot be
@@ -336,7 +357,7 @@ As of **2026-07-27**:
 - `source: pdf` distinguishes PDF chunks from Markdown chunks
 - `obsidian_markdown_bge_small` (bge-small-en-v1.5) and `obsidian_markdown_gte_small`
   (gte-small) were trialled in their own collections and rejected as net regressions
-  — see "Changing the embedding model" above. Drop them with
+  — see "Index provenance and model changes" above. Drop them with
   `scripts/drop_collections.py`.
 
 CLAUDE.md is the authoritative record of the current corpus; treat the numbers here

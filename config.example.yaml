@@ -1,0 +1,50 @@
+# Portable starter profile. Copy this file outside version control or override
+# paths through the RAG_* environment variables documented in .env.example.
+vault_path: ./example-data/vault
+index_path: ./data/chroma
+log_path: ./data/logs/rag.log
+store: chroma
+collection_name: personal_notes
+
+exclude_dirs: [.obsidian, .trash, .git]
+exclude_files: [.DS_Store, README.md]
+exclude_filename_patterns: ["* MOC.md"]
+
+chunk_max_chars: 1200
+chunk_overlap_chars: 150
+embedding_model: sentence-transformers/all-MiniLM-L6-v2
+query_instruction: ""
+reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2
+rerank_fetch_k: 20
+rerank_default: false
+tag_fetch_k: 200
+hybrid_fetch_k: 50
+hybrid_weights: [0.3, 1.0]
+hybrid_rrf_k: 60
+
+# Source-scoped deletion safety. A source run must also complete without failed
+# or unexpectedly empty files before any deletion is eligible.
+prune_max_fraction: 0.25
+prune_max_chunks: 10000
+embedding_batch_size: 16
+markdown_workers: 1
+pdf_workers: 1
+
+pdf_sources:
+  - id: pdf:books
+    path: ./example-data/books
+    type: book
+  - id: pdf:resources
+    path: ./example-data/resources
+    type: resource
+json_sources:
+  - id: json:catalog
+    path: ./data/indexed
+
+extractor:
+  books_path: ./example-data/books
+  resources_path: ./example-data/resources
+  catalog_path: ./example-data/vault/Resources/_catalog
+  output_path: ./data
+  obsidian_notes_path: ./example-data/vault/Resources/Generated/Resource Notes
+  mocs_path: ./example-data/vault/Resources/Generated

@@ -7,20 +7,39 @@ are idempotent — unlike live PDF parsing."""
 
 import json
 from pathlib import Path
+from typing import Optional, Tuple
 
 from ..chunking import chunk_paragraphs, split_by_headings, stable_id
 
 
-def extract_json_doc(json_path: Path, max_chars: int, overlap: int):
-    """Index one pre-extracted document JSON → (ids, documents, metadatas, error)."""
+MIN_INDEXABLE_TEXT_CHARS = 40
+
+
+def load_indexable_json(json_path: Path) -> Tuple[Optional[dict], Optional[str]]:
+    """Load one valid, indexable artifact using the extractor's exact rules."""
     try:
         obj = json.loads(json_path.read_text(encoding="utf-8"))
     except Exception as exc:
-        return [], [], [], f"skip json read error: {json_path.name}: {exc}"
+        return None, f"skip json read error: {json_path.name}: {exc}"
+    if not isinstance(obj, dict):
+        return None, f"skip json schema error: {json_path.name}: expected an object"
 
-    text = (obj.get("text") or "").strip()
-    if len(text) < 40:
+    text = str(obj.get("text") or "").strip()
+    if len(text) < MIN_INDEXABLE_TEXT_CHARS:
+        return None, None
+    obj["text"] = text
+    return obj, None
+
+
+def extract_json_doc(json_path: Path, max_chars: int, overlap: int):
+    """Index one pre-extracted document JSON → (ids, documents, metadatas, error)."""
+    obj, error = load_indexable_json(json_path)
+    if error:
+        return [], [], [], error
+    if obj is None:
         return [], [], [], None  # empty / failed extraction — nothing to index
+
+    text = obj["text"]
 
     file_name = str(obj.get("file_name") or json_path.stem)
     tags_value = obj.get("tags") or []
