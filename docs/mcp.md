@@ -153,6 +153,88 @@ Ask your AI assistant a question about something in your vault:
 
 The assistant should call the `search` tool and incorporate results from your knowledge base into its answer.
 
+## Docker option
+
+Instead of pointing your host at the venv binary, you can run the MCP server inside
+the `personal-rag:latest` container and register a small shell wrapper — the same
+`~/tools/*.sh` convention used for the gitlab/terraform MCP servers. This decouples
+the registered server from a live checkout and a populated `.venv`, and it runs
+fully offline: the embedding model is baked into the image at build time.
+
+### 1. Build the image
+
+```bash
+cd /path/to/personal-rag
+make mcp-docker          # or: docker build -t personal-rag:latest .
+```
+
+The build bakes `all-MiniLM-L6-v2` into the image (`HF_HOME=/data/hf-cache`), so a
+per-session `docker run` has no cold-start network pull. The image also sets
+`TRANSFORMERS_VERBOSITY=error`, `HF_HUB_DISABLE_PROGRESS_BARS=1`, and
+`TOKENIZERS_PARALLELISM=false` so HuggingFace/torch chatter goes to stderr and
+never corrupts the stdio JSON-RPC stream on stdout.
+
+### 2. Create the wrapper
+
+Write `~/tools/personal-rag-mcp.sh` (terraform-style — no secret needed):
+
+```bash
+#!/bin/bash
+exec docker run -i --rm \
+  -v "$HOME/Documents/personal-rag/chroma_db:/data/chroma" \
+  -e RAG_INDEX_PATH=/data/chroma \
+  personal-rag:latest rag-mcp
+```
+
+Then make it executable:
+
+```bash
+chmod +x ~/tools/personal-rag-mcp.sh
+```
+
+Notes:
+- `-i` and **no** `-t`: the host owns stdin/stdout for the stdio transport.
+- `--rm`: the container is session-scoped and cleaned up on exit.
+- The `chroma_db` mount is **read-write**, not `:ro`. ChromaDB's `PersistentClient`
+  takes a writer lock (`chroma_db.writer.lock`) and needs SQLite write access even
+  for query-only reads, so a read-only mount fails.
+- `config.yaml` is baked into the image, so `RAG_CONFIG_PATH` is not required. The
+  baked profile has `rerank_default: false`, so the cross-encoder reranker is not
+  used (and not baked). A rerank-enabled profile would need the cross-encoder baked
+  in and its config mounted — out of scope for this default search wrapper.
+- Hybrid search is off by default and needs no `lexical_index` mount.
+
+### 3. Register the wrapper with Claude Code
+
+```bash
+claude mcp remove personal-rag -s user
+claude mcp add personal-rag -s user -- ~/tools/personal-rag-mcp.sh
+```
+
+### 4. Verify
+
+```bash
+# Manual smoke test — should hang SILENTLY on stdin (correct); Ctrl-C to stop:
+docker run -i --rm \
+  -v "$HOME/Documents/personal-rag/chroma_db:/data/chroma" \
+  -e RAG_INDEX_PATH=/data/chroma \
+  personal-rag:latest rag-mcp
+
+claude mcp list          # personal-rag ✔ Connected, pointing at the ~/tools path
+```
+
+Then, in a fresh session, ask a real question about your vault and confirm the
+`search` tool is called.
+
+### macOS: CPU vs MPS tradeoff
+
+The container is **CPU-only** — Docker Desktop on macOS does not pass through Apple
+Silicon's MPS (or NVIDIA CUDA). The native venv binary (`.venv/bin/rag-mcp`) uses
+MPS on Apple Silicon and embeds the query slightly faster. The Docker path trades
+that small per-query latency for isolation, offline reproducibility, and no
+dependency on a live checkout or a populated `.venv`. For an interactive `search`
+tool the CPU embed of a single short query is not noticeable in practice.
+
 ## Verifying the connection
 
 ### Check the tool is advertised

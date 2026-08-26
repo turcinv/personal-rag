@@ -30,4 +30,16 @@ ENV HF_HOME=/data/hf-cache
 ENV TRANSFORMERS_CACHE=/data/hf-cache
 ENV RAG_INDEX_PATH=/data/chroma
 
+# Keep stdout pure for the MCP stdio handshake (rag-mcp): HF/torch chatter must
+# go to stderr, never stdout, or it corrupts the JSON-RPC stream.
+ENV TRANSFORMERS_VERBOSITY=error
+ENV HF_HUB_DISABLE_PROGRESS_BARS=1
+ENV TOKENIZERS_PARALLELISM=false
+
+# Bake the embedding model into the image (CPU) so a per-session `docker run` has
+# no cold-start network pull and works offline. Lands in HF_HOME=/data/hf-cache,
+# a different subpath than the /data/chroma mount, so it is never shadowed.
+RUN python -c "from sentence_transformers import SentenceTransformer; \
+    SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+
 CMD ["python", "-m", "rag.query", "--help"]

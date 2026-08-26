@@ -1,5 +1,5 @@
 .PHONY: help install install-dev check lint test-coverage package-check config-doctor index build-lexical query eval stats pipeline-status sync-to-jetson test test-unit build build-jetson \
-        serve mcp pipeline docker-pipeline docker-serve jetson-serve \
+        serve mcp mcp-docker pipeline docker-pipeline docker-serve jetson-serve \
         docker-index docker-query docker-test \
         jetson-pipeline-status jetson-full-pipeline \
         jetson-index jetson-query jetson-eval jetson-stats jetson-test \
@@ -66,6 +66,7 @@ help:
 	@echo ""
 	@echo "Docker x86:"
 	@echo "  make build                build personal-rag:latest"
+	@echo "  make mcp-docker           build the image + print the Docker MCP wrapper path"
 	@echo "  make docker-index / docker-query Q=\"...\""
 	@echo "  make docker-serve         run the HTTP API container (port 8000)"
 	@echo "  make docker-pipeline      run the config-driven artifact pipeline"
@@ -178,6 +179,13 @@ serve:
 # configure an MCP host with the absolute path to .venv/bin/rag-mcp.
 mcp:
 	.venv/bin/rag-mcp
+
+# Build the image (bakes the embedding model) and print where to register the
+# Docker MCP wrapper. See docs/mcp.md → "Docker option" for the wrapper contents.
+mcp-docker:
+	docker build -t personal-rag:latest .
+	@echo "Built personal-rag:latest."
+	@echo "Register the wrapper at ~/tools/personal-rag-mcp.sh — see docs/mcp.md → 'Docker option'."
 
 # Transfer the active, validated artifact generation (and its compatibility
 # aliases) from macOS → Jetson, flipping the remote `current` pointer last so a
