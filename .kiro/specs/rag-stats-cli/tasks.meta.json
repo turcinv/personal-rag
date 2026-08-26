@@ -1,0 +1,162 @@
+{
+  "pbtResults": {
+    "1. Write bug condition exploration test": {
+      "status": "passed",
+      "failingExample": "All 9 tests failed as expected on unfixed code, confirming the bug exists:\n\n1. test_rag_stats_module_importable: ModuleNotFoundError: No module named 'rag.stats'\n2. test_rag_stats_registered_as_console_script: AssertionError: rag-stats is not registered as a console script in pyproject.toml\n3. test_stats_main_prints_total_chunk_count: ModuleNotFoundError: No module named 'rag.stats'\n4. test_stats_main_prints_per_source_type_breakdown: ModuleNotFoundError: No module named 'rag.stats'\n5. test_stats_main_collections_flag: ModuleNotFoundError: No module named 'rag.stats'\n6. test_stats_main_handles_empty_index: ModuleNotFoundError: No module named 'rag.stats'\n7. test_stats_main_uses_paginated_iteration: ModuleNotFoundError: No module named 'rag.stats'\n8. test_stats_main_unknown_source_type: ModuleNotFoundError: No module named 'rag.stats'\n9. test_stats_module_does_not_import_chromadb: AssertionError: src/rag/stats.py does not exist\n\nCounterexamples proving the bug:\n- `from rag.stats import main` raises ModuleNotFoundError\n- `rag-stats` is not in pyproject.toml [project.scripts]\n- src/rag/stats.py does not exist on disk",
+      "lastRunTimestamp": 1787145094913
+    },
+    "3.4 Verify bug condition exploration test now passes": {
+      "status": "passed",
+      "lastRunTimestamp": 1787207531634
+    },
+    "3.5 Verify preservation tests still pass": {
+      "status": "passed",
+      "lastRunTimestamp": 1787207532341
+    }
+  },
+  "executionHistory": {
+    "1. Write bug condition exploration test": [
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787144969108
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787144977743
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787145120768
+      }
+    ],
+    "2. Write preservation property tests (BEFORE implementing fix)": [
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787144969167
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787145125038
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787145548408
+      }
+    ],
+    "3.1 Create `src/rag/stats.py` module": [
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787144969187
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787145555364
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787145685727
+      }
+    ],
+    "3.2 Register `rag-stats` console script in `pyproject.toml`": [
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787144969213
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787145690080
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787145694551
+      }
+    ],
+    "3.3 Add Makefile targets `stats` and `jetson-stats`": [
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787144969238
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787145698547
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787207493430
+      }
+    ],
+    "3.4 Verify bug condition exploration test now passes": [
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787144969271
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787207496075
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787207547372
+      }
+    ],
+    "3.5 Verify preservation tests still pass": [
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787144969294
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787207496988
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787207548096
+      }
+    ],
+    "4. Checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787144969315
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787207553228
+      },
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787207801451
+      }
+    ],
+    "3. Implement `rag-stats` CLI command": [
+      {
+        "executionId": "2e80f6d5-6705-4846-a482-b467cd4b92b3",
+        "chatSessionId": "sess_8dc09d31-4f10-496b-92cb-0dcd5fc3889e",
+        "timestamp": 1787207548139
+      }
+    ]
+  }
+}

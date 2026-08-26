@@ -10,6 +10,7 @@ import re
 import zipfile
 
 import fitz  # PyMuPDF
+from pptx import Presentation
 
 
 def detect_type(path):
@@ -25,6 +26,8 @@ def detect_type(path):
                     mt = z.read("mimetype").decode("ascii", "ignore").strip()
                     if mt == "application/epub+zip":
                         return "EPUB"
+                if "ppt/presentation.xml" in z.namelist():
+                    return "PPTX"
                 return "ZIP"
         except zipfile.BadZipFile:
             return "ZIP(corrupt)"
@@ -70,6 +73,27 @@ def epub_has_text(path, min_chars=100):
         return False, f"error: {e}"
 
 
+def pptx_has_text(path, min_chars=100):
+    """PPTX slides/tables/notes: check for text content, analogous to epub_has_text."""
+    try:
+        prs = Presentation(path)
+        total = 0
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
+                    total += len(shape.text_frame.text.strip())
+                if getattr(shape, "has_table", False) and shape.has_table:
+                    for row in shape.table.rows:
+                        total += len(" | ".join(cell.text for cell in row.cells).strip())
+            if slide.has_notes_slide:
+                total += len(slide.notes_slide.notes_text_frame.text.strip())
+            if total >= min_chars:
+                return True, f"text found ({len(prs.slides)} slides)"
+        return (total >= min_chars), f"{total} chars sampled in {len(prs.slides)} slides"
+    except Exception as e:
+        return False, f"error: {e}"
+
+
 def main():
     ap = argparse.ArgumentParser(description="Pre-flight survey of a document directory")
     ap.add_argument("dir", nargs="?", default=None,
@@ -91,6 +115,8 @@ def main():
             ok, note = pdf_has_text(path)
         elif ftype == "EPUB":
             ok, note = epub_has_text(path)
+        elif ftype == "PPTX":
+            ok, note = pptx_has_text(path)
         else:
             ok, note = False, "unsupported type"
         rows.append((fname, ftype, "Yes" if ok else "No", note))

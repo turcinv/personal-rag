@@ -17,6 +17,7 @@ PyYAML==6.0.3
 pypdf==6.12.2
 PyMuPDF>=1.24
 cryptography>=3.1
+python-pptx==1.0.2   # PPTX extraction (extractor pipeline); pulls lxml + xlsxwriter
 numpy==2.2.6   # Python 3.10 ceiling — numpy 2.3+ requires 3.11
 
 # These are pulled in by the above or needed for shared utilities

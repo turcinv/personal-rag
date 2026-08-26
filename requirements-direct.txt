@@ -20,6 +20,9 @@ PyYAML==6.0.3
 pypdf==6.12.2
 PyMuPDF>=1.24
 cryptography>=3.1
+# PPTX slide/table/notes text extraction in the extractor pipeline
+# (src/extractor/extract_text.py::extract_pptx, analyze_files.py::pptx_has_text).
+python-pptx
 torch==2.5.1
 posthog==7.17.0
 python-dotenv==1.2.2

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Extract all text from every PDF/EPUB in a directory.
+"""Extract all text from every PDF/EPUB/PPTX in a directory.
 
 Strategy:
   - PDFs: use the embedded text layer per page (PyMuPDF). Pages that have
     essentially no extractable text (image/scanned pages) are rendered to an
     image and run through Tesseract OCR. Fully text-based files never invoke OCR.
   - EPUBs: concatenate text from the XHTML documents in spine order.
+  - PPTX: concatenate text-frame and table text per slide, plus speaker notes
+    (prefixed "[NOTES]:"), in slide order. No OCR path — same as EPUB/MD.
 
 Output: one JSON file per book in text_output/, containing metadata + full text.
 A manifest.json summarizes the whole run.
@@ -28,6 +30,7 @@ import zipfile
 from html import unescape
 
 import fitz  # PyMuPDF
+from pptx import Presentation
 
 OCR_CHAR_THRESHOLD = 5
 OCR_DPI = 300
@@ -67,6 +70,8 @@ def detect_type(path):
                     mt = z.read("mimetype").decode("ascii", "ignore").strip()
                     if mt == "application/epub+zip":
                         return "EPUB"
+                if "ppt/presentation.xml" in z.namelist():
+                    return "PPTX"
                 return "ZIP"
         except zipfile.BadZipFile:
             return "ZIP(corrupt)"
@@ -194,6 +199,47 @@ def extract_epub(path):
     return full, meta
 
 
+def extract_pptx(path):
+    """Concatenate slide text-frame/table text plus speaker notes, in slide order.
+
+    No OCR path — meta mirrors extract_epub()/extract_md()'s shape so downstream
+    JSON consumers (build_index_documents.py, rag/extractors/json_doc.py) need no
+    special-casing for PPTX.
+    """
+    prs = Presentation(path)
+    parts = []
+    for slide in prs.slides:
+        slide_parts = []
+        for shape in slide.shapes:
+            if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    text = "".join(run.text for run in para.runs)
+                    if text.strip():
+                        slide_parts.append(text)
+            if getattr(shape, "has_table", False) and shape.has_table:
+                for row in shape.table.rows:
+                    row_text = " | ".join(cell.text for cell in row.cells)
+                    if row_text.strip():
+                        slide_parts.append(row_text)
+        if slide.has_notes_slide:
+            notes = slide.notes_slide.notes_text_frame.text
+            if notes.strip():
+                slide_parts.append(f"[NOTES]: {notes}")
+        if slide_parts:
+            parts.append("\n".join(slide_parts))
+    full = "\n\n".join(parts)
+    meta = {
+        "total_documents": len(prs.slides),
+        "text_layer_chars": len(full),
+        "ocr_pages": [],
+        "ocr_page_count": 0,
+        "ocr_chars": 0,
+        "total_chars": len(full),
+        "ocr_used": False,
+    }
+    return full, meta
+
+
 def extract_md(path):
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         full = f.read()
@@ -257,7 +303,7 @@ def main():
 
     parser = argparse.ArgumentParser(
         prog="rag-extract",
-        description="Extract PDF, EPUB, Markdown, and text files into JSON.",
+        description="Extract PDF, EPUB, PPTX, Markdown, and text files into JSON.",
     )
     parser.add_argument("directory", nargs="?", default=os.getcwd())
     parser.add_argument("filename", nargs="?")
@@ -327,6 +373,8 @@ def main():
                 text, meta = extract_pdf(path)
             elif ftype == "EPUB":
                 text, meta = extract_epub(path)
+            elif ftype == "PPTX":
+                text, meta = extract_pptx(path)
             elif ftype in ("MD", "TXT"):
                 text, meta = extract_md(path)
             else:

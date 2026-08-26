@@ -4,15 +4,17 @@ import json
 import os
 import sqlite3
 import sys
+import zipfile
 
 import pytest
 
-from extractor.analyze_files import detect_type, pdf_has_text, epub_has_text
+from extractor.analyze_files import detect_type, pdf_has_text, epub_has_text, pptx_has_text
 from extractor.build_index_documents import split_list, to_int, merge
 from extractor.build_vault_index import parse_frontmatter, norm_tags
 from extractor.dup_detect import shingles, jaccard
 from extractor.extract_text import (
     detect_type as ext_detect_type,
+    extract_pptx,
     _strip_html,
     _cached_extraction_ok,
     MIN_USABLE_CHARS,
@@ -138,6 +140,77 @@ def test_analyze_detect_type_unknown(tmp_path):
     p = tmp_path / "data.bin"
     p.write_bytes(b"\x00\x01\x02\x03\x04\x05\x06\x07")
     assert detect_type(str(p)) == "UNKNOWN"
+
+
+# ── PPTX (extract_text + analyze_files) ───────────────────────────────────────
+
+SLIDE_TEXT = "AgentCore sales pitch headline"
+TABLE_CELL_A = "Feature X"
+TABLE_CELL_B = "Benefit Y"
+NOTES_TEXT = "Speaker note: open with the customer's pain point"
+
+
+def _make_pptx(path):
+    """Build a real 1-slide .pptx with a text box, a table, and a notes slide."""
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank layout
+    tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
+    tb.text_frame.text = SLIDE_TEXT
+    table = slide.shapes.add_table(1, 2, Inches(1), Inches(3), Inches(4), Inches(1)).table
+    table.cell(0, 0).text = TABLE_CELL_A
+    table.cell(0, 1).text = TABLE_CELL_B
+    slide.notes_slide.notes_text_frame.text = NOTES_TEXT
+    prs.save(str(path))
+    return path
+
+
+def test_detect_type_pptx(tmp_path):
+    p = _make_pptx(tmp_path / "deck.pptx")
+    # both detect_type variants must recognise it by content, not extension
+    assert ext_detect_type(str(p)) == "PPTX"
+    assert detect_type(str(p)) == "PPTX"
+
+
+def test_extract_pptx_pulls_shapes_tables_and_notes(tmp_path):
+    p = _make_pptx(tmp_path / "deck.pptx")
+    text, meta = extract_pptx(str(p))
+    assert SLIDE_TEXT in text
+    assert TABLE_CELL_A in text and TABLE_CELL_B in text
+    assert " | " in text  # table row cells joined
+    assert NOTES_TEXT in text
+    assert "[NOTES]:" in text
+    assert meta["total_documents"] == 1  # one slide
+    assert meta["ocr_used"] is False
+    assert meta["total_chars"] == len(text)
+
+
+def test_pptx_has_text(tmp_path):
+    p = _make_pptx(tmp_path / "deck.pptx")
+    ok, note = pptx_has_text(str(p))
+    assert ok is True
+
+
+# Regression guard: an EPUB and a generic zip share the "zip with an internal
+# manifest" shape with PPTX, and must NOT be misdetected as PPTX.
+
+def test_epub_not_misdetected_as_pptx(tmp_path):
+    p = tmp_path / "book.epub"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("mimetype", "application/epub+zip")
+        z.writestr("OEBPS/ch1.xhtml", "<html><body>chapter</body></html>")
+    assert ext_detect_type(str(p)) == "EPUB"
+    assert detect_type(str(p)) == "EPUB"
+
+
+def test_generic_zip_not_misdetected_as_pptx(tmp_path):
+    p = tmp_path / "archive.zip"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("data/readme.txt", "hello")
+    assert ext_detect_type(str(p)) == "ZIP"
+    assert detect_type(str(p)) == "ZIP"
 
 
 # ── build_index_documents ─────────────────────────────────────────────────────

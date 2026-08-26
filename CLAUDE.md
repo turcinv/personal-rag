@@ -6,7 +6,7 @@ Local retrieval index for an Obsidian knowledge vault + a PDF book/resource libr
 
 ## What this project does
 
-- Extracts text from PDF/EPUB/Markdown source documents (PyMuPDF + Tesseract OCR)
+- Extracts text from PDF/EPUB/PPTX/Markdown source documents (PyMuPDF + Tesseract OCR; python-pptx for slides)
 - Builds a classified, FTS-searchable SQLite index of all books/resources + vault notes
 - Generates per-resource Obsidian note stubs and injects backlinks into Topic MOCs
 - Indexes vault Markdown notes and document JSON into a local collection, reached
@@ -194,6 +194,7 @@ Declared in `requirements-direct.txt` (the source of truth) and mirrored in
 | PyYAML | 6.0.3 | config profiles |
 | pypdf | 6.12.2 | live PDF parsing fallback (`extractors/pdf.py`) |
 | PyMuPDF | >=1.24 | PDF/EPUB extraction, OCR page rendering (`src/extractor/`) |
+| python-pptx | 1.0.2 | PPTX slide/table/notes text extraction (`src/extractor/`) |
 | cryptography | >=3.1 | AES-encrypted PDF support |
 | posthog | 7.17.0 | pinned only to keep the chromadb telemetry patch working |
 | python-dotenv | 1.2.2 | `.env` path overrides |
