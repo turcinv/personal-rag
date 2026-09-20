@@ -122,12 +122,20 @@ def main():
     ext = load_extractions(args.text_dirs)
 
     matched, jsonl_records = [], []
+    seen_stems = {}
     for name, (erec, _) in sorted(ext.items()):
         irec = inv.get(name)
         if irec is None:
             continue
         rec = merge(irec, erec)
         out_name = os.path.splitext(name)[0] + ".json"
+        # Output JSON is keyed by file stem: a .pdf and .epub of one book collide
+        # here and the second write silently overwrites the first (the JSONL keeps
+        # both). Warn so the redundant format can be de-catalogued.
+        if out_name in seen_stems:
+            print(f"  WARNING: stem collision {name!r} overwrites {seen_stems[out_name]!r} "
+                  f"at {out_name} — keep one format per stem")
+        seen_stems[out_name] = name
         with open(os.path.join(args.out, out_name), "w", encoding="utf-8") as f:
             json.dump(rec, f, ensure_ascii=False, indent=2)
         matched.append(name)

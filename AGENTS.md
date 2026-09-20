@@ -59,7 +59,7 @@ make help                 # every target
 ```
 
 `rag-serve` and `rag-token` (mint a service JWT) are the two API entry points; there
-are 16 `rag-*` console scripts in total, see `pyproject.toml`.
+are 24 `rag-*` console scripts in total, see `pyproject.toml`.
 
 Jetson-side (run ON the Jetson, not from macOS — aarch64 PyTorch wheels won't build
 on x86): `make build-jetson`, `make jetson-index`, `make jetson-query Q="..."`,
@@ -106,9 +106,10 @@ real model download.
 extra is skipped and a fresh venv cannot run the suite. Install it separately
 (`uv pip install pytest`).
 
-CI (`.github/workflows/ci.yml`) runs `pytest tests/ -q` on Python 3.10 (matches
-Jetson JetPack 6.2) on every push/PR. Note CI does **not** test 3.12, which is what
-macOS development typically runs, and there is no lint or type-check step.
+CI (`.github/workflows/ci.yml`) runs on Python 3.10 (matches Jetson JetPack 6.2)
+and 3.12 (typical macOS development) on every push/PR, executing `make lint`,
+`make test-coverage`, and `make package-check`. There is a lint step (ruff,
+correctness-only rules) but no type-check step.
 
 Run the unit suite before committing any change under `src/` — especially
 `chunking.py`, `indexing.py`, `store/`, or the extractors, which have the most test
@@ -116,9 +117,12 @@ coverage and the most Jetson-memory sensitivity.
 
 ## Code style
 
-No enforced formatter/linter (no black/ruff config in this repo) — match the
-existing style in the file you're editing. Python 3.10 syntax only (Jetson
-JetPack 6.2 ships 3.10, not 3.12 — do not use 3.11+-only syntax).
+Ruff is configured and enforced in CI (`make lint` → `ruff check src tests
+scripts`) with a deliberately correctness-only ruleset (`E9`, `F63`, `F7`, `F82`;
+`target-version = py310`, `line-length = 100`) — it is a correctness gate, not a
+full formatter. Match the existing style in the file you're editing. Python 3.10
+syntax only (Jetson JetPack 6.2 ships 3.10, not 3.12 — do not use 3.11+-only
+syntax).
 
 ## Security & gotchas
 

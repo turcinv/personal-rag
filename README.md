@@ -427,7 +427,7 @@ Pre-extracted JSON     ─┘         │
 | `config.yaml` | Default profile — vault paths, PDF sources, chunk settings |
 | `config.personal.yaml` | Personal-KB profile (light/Jetson) — select via `RAG_CONFIG_PATH` |
 | `config.logmanager.yaml` | Logmanager wiki profile (heavy/x86, markdown-only) — select via `RAG_CONFIG_PATH` |
-| `pyproject.toml` | Package definition and all 16 `rag-*` console entry points |
+| `pyproject.toml` | Package definition and all 24 `rag-*` console entry points |
 | `.env.example` | Template for path overrides via environment variables |
 | `Makefile` | Shortcuts for local and Docker workflows |
 | `requirements.txt` | Full pinned dependency lockfile (macOS/x86) |

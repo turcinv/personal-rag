@@ -12,7 +12,8 @@ store: chroma
 
 # Collection name encodes the embedding model. Chunk IDs are sha256 of the chunk
 # TEXT, not the embedding (see chunking.stable_id), so a model swap MUST use a
-# fresh collection name or old vectors silently survive. bge-small-en-v1.5
+# fresh collection name — otherwise the provenance guard aborts with a
+# ProvenanceError (embedding_model is part of the index fingerprint). bge-small-en-v1.5
 # (obsidian_markdown_bge_small) and gte-small (obsidian_markdown_gte_small) were
 # both tried and both net-regressed vs MiniLM on this corpus — see tests/eval/
 # bge_small.json / gte_small.json vs baseline.json. MiniLM kept.
