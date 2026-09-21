@@ -41,7 +41,7 @@ def start_index(
     409 if an index run is already in progress (never two against one Chroma
     dir). The command is fixed — no request input is passed to the subprocess."""
     job_id, record = manager.start(_log_dir(state))
-    if job_id is None:
+    if job_id is None or record is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="an index run is already in progress",

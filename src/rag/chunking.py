@@ -43,7 +43,7 @@ def split_by_headings(text: str, min_level: int = 1):
     genuine document structure. Sections with an empty body are dropped."""
     sections = []
     current_heading = "Document"
-    current_lines = []
+    current_lines: list = []
     for line in text.splitlines():
         if min_level <= 1:
             is_heading = line.startswith("#")

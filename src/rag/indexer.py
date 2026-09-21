@@ -49,7 +49,7 @@ def _log_prune_plan(plan) -> None:
 
 
 def _validate_unique_sources(sources) -> None:
-    locations = {}
+    locations: dict = {}
     for index, source in enumerate(sources):
         previous = locations.get(source.source_id)
         if previous is not None:

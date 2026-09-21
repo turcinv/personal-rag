@@ -158,10 +158,11 @@ def run() -> None:
     """``rag-serve`` entry point. Host/port precedence: env > config.api > default."""
     import uvicorn
 
-    api = {}
+    api: dict = {}
     try:
         cfg = load_config()
-        api = cfg.get("api") if isinstance(cfg.get("api"), dict) else {}
+        raw = cfg.get("api")
+        api = raw if isinstance(raw, dict) else {}
     except Exception as exc:  # pragma: no cover - config errors surface in lifespan
         logger.warning("Could not read api host/port from config: %s", exc)
 

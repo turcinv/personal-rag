@@ -32,7 +32,7 @@ def _require_supported_backend(config: dict) -> None:
         )
 
 
-def get_store(config: dict, collection_name: str = None):
+def get_store(config: dict, collection_name: str | None = None):
     """Instantiate the ``RetrievalStore`` backend named in ``config['store']``.
 
     Only ``"chroma"`` is implemented today; any other value raises ``ValueError``.

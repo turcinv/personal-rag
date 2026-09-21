@@ -9,7 +9,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, cast
 
 from extractor.artifacts import (
     ArtifactGeneration,
@@ -67,12 +67,12 @@ class PipelinePaths:
         if missing:
             raise ConfigError(f"Extractor path(s) not configured: {', '.join(missing)}")
         return cls(
-            books=extractor.books_path,
-            resources=extractor.resources_path,
-            catalog=extractor.catalog_path,
-            output=extractor.output_path,
-            notes=extractor.obsidian_notes_path,
-            mocs=extractor.mocs_path,
+            books=cast(Path, extractor.books_path),
+            resources=cast(Path, extractor.resources_path),
+            catalog=cast(Path, extractor.catalog_path),
+            output=cast(Path, extractor.output_path),
+            notes=cast(Path, extractor.obsidian_notes_path),
+            mocs=cast(Path, extractor.mocs_path),
             vault=Path(config["vault_path"]),
         )
 

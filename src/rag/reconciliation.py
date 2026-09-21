@@ -112,7 +112,7 @@ class ReconciliationCatalog:
     def close(self) -> None:
         if self.connection is not None:
             self.connection.close()
-            self.connection = None
+            self.connection = None  # type: ignore[assignment]  # sentinel after close(); guarded above
         self.path.unlink(missing_ok=True)
 
     def classify_and_mark(

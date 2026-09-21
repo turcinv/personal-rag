@@ -12,6 +12,7 @@ factory the API lifespan uses, keyed on the ``generation.provider`` config.
 """
 
 import os
+from typing import Any
 
 from .base import (
     AnswerResult,
@@ -99,7 +100,7 @@ def get_generator(config: dict):
     module = importlib.import_module(f".{module_name}", __package__)
     cls = getattr(module, class_name)
 
-    kwargs = dict(
+    kwargs: dict[str, Any] = dict(
         max_tokens=int(gen_cfg.get("max_tokens", 1024)),
         temperature=float(gen_cfg.get("temperature", 0.0)),
         timeout=float(gen_cfg.get("timeout", 60.0)),

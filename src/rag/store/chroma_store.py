@@ -10,6 +10,7 @@ with the ``[0]``-unwrap, and ``delete()``. No ranking, metric, or ID change.
 
 import json
 import logging
+from typing import Any
 
 # Import order matters: rag.utils sets ANONYMIZED_TELEMETRY and patches
 # posthog.capture *before* chromadb is imported anywhere in the process (see
@@ -62,7 +63,7 @@ class ChromaStore:
             settings=chromadb.Settings(anonymized_telemetry=False),
         )
         self._collection_name = collection_name
-        self._collection = None  # lazily opened; see _coll()
+        self._collection: Any = None  # lazily opened; see _coll()
 
     @property
     def name(self) -> str:

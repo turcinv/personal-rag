@@ -1,4 +1,4 @@
-.PHONY: help install install-dev check lint test-coverage package-check config-doctor index build-lexical query eval stats pipeline-status sync-to-jetson test test-unit build build-jetson \
+.PHONY: help install install-dev check lint typecheck test-coverage package-check config-doctor index build-lexical query eval stats pipeline-status sync-to-jetson test test-unit build build-jetson \
         serve mcp mcp-docker pipeline docker-pipeline docker-serve jetson-serve \
         docker-index docker-query docker-test \
         jetson-pipeline-status jetson-full-pipeline \
@@ -28,7 +28,7 @@ help:
 	@echo "Setup:"
 	@echo "  make install              create venv and install runtime package"
 	@echo "  make install-dev          install runtime plus pinned contributor tools"
-	@echo "  make check                lint, coverage-tested unit suite, wheel smoke test"
+	@echo "  make check                lint, type-check, coverage-tested unit suite, wheel smoke test"
 	@echo ""
 	@echo "RAG (local):"
 	@echo "  make index                reindex vault + PDFs into ChromaDB"
@@ -46,6 +46,7 @@ help:
 	@echo "  make test-unit            offline pytest unit suite"
 	@echo "  make test-coverage        unit suite with branch-coverage ratchet"
 	@echo "  make lint                 Ruff correctness checks"
+	@echo "  make typecheck            mypy static type check (lenient, src only)"
 	@echo "  make package-check        build wheel and smoke-test entry points"
 	@echo "  make test [K=keyword]     retrieval smoke report (needs an index)"
 	@echo ""
@@ -94,10 +95,13 @@ install:
 install-dev: install
 	uv pip install -e ".[dev]"
 
-check: lint test-coverage package-check
+check: lint typecheck test-coverage package-check
 
 lint:
 	$(PYTHON) -m ruff check src tests scripts
+
+typecheck:
+	$(PYTHON) -m mypy
 
 test-coverage:
 	$(PYTHON) -m pytest tests/ -q --cov=rag --cov=extractor --cov-branch

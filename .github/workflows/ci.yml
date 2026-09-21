@@ -35,6 +35,9 @@ jobs:
       - name: Lint
         run: make lint PYTHON=python
 
+      - name: Type check
+        run: make typecheck PYTHON=python
+
       - name: Run offline unit suite with coverage
         run: make test-coverage PYTHON=python
 

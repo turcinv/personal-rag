@@ -7,6 +7,7 @@ and returns the decoded claims. Neither the token nor the secret is ever logged.
 """
 
 import os
+from typing import Any
 
 import jwt
 from fastapi import Depends, HTTPException, status
@@ -87,7 +88,7 @@ def require_jwt(
     # before. When set, PyJWT rejects a token whose aud/iss do not match.
     audience = os.environ.get(JWT_AUDIENCE_ENV) or None
     issuer = os.environ.get(JWT_ISSUER_ENV) or None
-    decode_kwargs = {"algorithms": [JWT_ALGORITHM]}
+    decode_kwargs: dict[str, Any] = {"algorithms": [JWT_ALGORITHM]}
     if audience:
         decode_kwargs["audience"] = audience
     if issuer:

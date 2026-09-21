@@ -108,8 +108,9 @@ extra is skipped and a fresh venv cannot run the suite. Install it separately
 
 CI (`.github/workflows/ci.yml`) runs on Python 3.10 (matches Jetson JetPack 6.2)
 and 3.12 (typical macOS development) on every push/PR, executing `make lint`,
-`make test-coverage`, and `make package-check`. There is a lint step (ruff,
-correctness-only rules) but no type-check step.
+`make typecheck`, `make test-coverage`, and `make package-check`. There is a lint
+step (ruff, correctness-only rules) and a type-check step (mypy, lenient — checks
+`src/` only, `ignore_missing_imports`, does not require full annotation).
 
 Run the unit suite before committing any change under `src/` — especially
 `chunking.py`, `indexing.py`, `store/`, or the extractors, which have the most test

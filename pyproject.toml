@@ -32,6 +32,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "build==1.5.0",
+    "mypy==2.3.1",
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
     "ruff==0.15.20",
@@ -86,3 +87,13 @@ line-length = 100
 # Start with correctness-only rules so linting is a useful gate without a
 # repository-wide formatting rewrite. Broaden this set incrementally.
 select = ["E9", "F63", "F7", "F82"]
+
+[tool.mypy]
+# Lenient by design, mirroring the correctness-only ruff gate: check the
+# annotations that exist and catch real type errors, but do NOT require every
+# function to be annotated (check_untyped_defs stays off). Broaden incrementally.
+python_version = "3.10"
+files = ["src"]
+ignore_missing_imports = true
+warn_redundant_casts = true
+warn_unused_ignores = true
