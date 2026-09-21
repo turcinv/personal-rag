@@ -3,6 +3,8 @@
 import json
 import sys
 
+import pytest
+
 from extractor.build_index_documents import main
 
 
@@ -124,10 +126,10 @@ def test_main_unmatched_inventory_and_extraction_are_reported(tmp_path):
     assert report["in_inventory_without_text"] == ["ghost.pdf"]
 
 
-def test_main_stem_collision_warns_and_overwrites_but_keeps_both(tmp_path, capsys):
+def test_main_stem_collision_is_a_hard_fail_with_no_partial_output(tmp_path):
     text = tmp_path / "text_output"
     text.mkdir()
-    # Distinct on-disk names so both survive; internal filenames share the "book" stem.
+    # Distinct on-disk names, but the internal filenames share the "book" stem.
     _write_extraction(text / "book_epub.json", "book.epub", text="epub body")
     _write_extraction(text / "book_pdf.json", "book.pdf", text="pdf body")
 
@@ -138,21 +140,13 @@ def test_main_stem_collision_warns_and_overwrites_but_keeps_both(tmp_path, capsy
     ])
 
     out = tmp_path / "indexed"
-    _run_main(inv, [text], out)
+    with pytest.raises(SystemExit) as exc:
+        _run_main(inv, [text], out)
 
-    warned = capsys.readouterr().out
-    assert "stem collision" in warned
-    assert "book.pdf" in warned and "book.epub" in warned
+    msg = str(exc.value)
+    assert "stem collision" in msg
+    assert "book.pdf" in msg and "book.epub" in msg
 
-    # Exactly one per-file doc for the shared stem (build_report.json is not one).
-    per_file = sorted(p.name for p in out.glob("*.json") if p.name != "build_report.json")
-    assert per_file == ["book.json"]
-
-    # sorted(ext) processes book.epub before book.pdf, so the pdf record overwrote it.
-    book = json.loads((out / "book.json").read_text(encoding="utf-8"))
-    assert book["file_type"] == "pdf"
-
-    # The per-file doc collapsed to one, but the JSONL still carries BOTH records.
-    docs = _read_jsonl(out / "index_documents.jsonl")
-    assert len(docs) == 2
-    assert {d["file_name"] for d in docs} == {"book.pdf", "book.epub"}
+    # The guard runs BEFORE any write, so no per-file doc and no combined JSONL exist.
+    assert list(out.glob("*.json")) == []
+    assert not (out / "index_documents.jsonl").exists()
