@@ -214,6 +214,26 @@ aliases, but now delegate to `rag-pipeline` and use the same typed profile/env
 resolution as the application. Docker and Jetson wrappers delegate to the same
 coordinator instead of maintaining separate path argument lists.
 
+### Syncing the index to the Jetson
+
+Two paths, depending on how the index was built:
+
+- **Per-stage / incremental flow (default).** The stage targets above write a flat
+  `indexed/` and do **not** publish an artifact generation. Ship it with a plain
+  rsync, then reindex on the Jetson. This is idempotent — chunk IDs are
+  content-hashed, so a partial transfer simply resumes on the next run:
+
+  ```bash
+  rsync -a "$RAG_JSON_PATH"/indexed/ <host>:<remote>/indexed/   # from this machine
+  make jetson-index                                             # on the Jetson
+  ```
+
+- **Atomic validated transfer (`make sync-to-jetson`).** Transfers exactly one
+  *published, checksum-validated* generation and flips the remote `current` pointer
+  last. It requires a full `rag-pipeline` run to publish a generation first — a
+  per-stage build has none, and `sync-to-jetson` refuses with a message pointing
+  back at the plain-rsync path above rather than shipping a half-written tree.
+
 ## Docker
 
 The repo ships two Dockerfiles and matching Compose files.

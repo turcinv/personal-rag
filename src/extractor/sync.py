@@ -25,7 +25,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable, List, Sequence, Tuple
 
-from extractor.artifacts import resolve_active
+from extractor.artifacts import ArtifactError, resolve_active
 from rag.config import ConfigError, load_config
 
 Command = Tuple[str, ...]
@@ -116,6 +116,19 @@ def main() -> None:
         commands = plan_generation_sync(extractor.output_path, host, remote_root)
     except ConfigError as exc:
         parser.error(str(exc))
+    except ArtifactError as exc:
+        raise SystemExit(
+            f"{exc}\n\n"
+            "sync-to-jetson transfers a published, checksum-validated artifact "
+            "generation, but none exists here. The per-stage flow "
+            "(make extract/enrich/build-index ...) writes a flat indexed/ and never "
+            "publishes a generation.\n"
+            "  - To use sync-to-jetson: run a full `rag-pipeline` first (it publishes one).\n"
+            "  - Or use the plain-rsync path (the default for the per-stage flow):\n"
+            "      rsync -a <output>/indexed/ <host>:<remote>/indexed/\n"
+            "      then `make jetson-index` on the host — idempotent, chunk IDs are "
+            "content-hashed, so a partial transfer just resumes next run."
+        )
 
     if args.dry_run:
         print("Generation sync plan (nothing transferred):")

@@ -54,7 +54,7 @@ make eval                 # recall@5/@10 + MRR over tests/eval/golden_queries.js
 make serve                # rag-serve — HTTP backend on 0.0.0.0:8000 (needs RAG_API_JWT_SECRET)
 make pipeline-status      # check all extraction pipeline outputs
 make extract enrich build-index build-notes build-sqlite build-vault-index  # full extractor pipeline, in order
-make sync-to-jetson JETSON_HOST=turcinv@<host>   # rsync extraction outputs to the Jetson
+make sync-to-jetson JETSON_HOST=turcinv@<host>   # ship a published generation (needs a full rag-pipeline run; the per-stage flow uses plain rsync — see README "Syncing the index to the Jetson")
 make help                 # every target
 ```
 
