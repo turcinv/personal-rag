@@ -116,6 +116,7 @@ def search(
     collection_name=None,
     rerank=False,
     hybrid=False,
+    include_unreviewed=False,
 ):
     """Retrieve the top chunks for ``query``.
 
@@ -147,6 +148,16 @@ def search(
     widened to ``tag_fetch_k`` (default 200) so the post-filter has candidates to
     keep; filtering runs before rerank/trim, so a very rare tag may still
     under-return within that pool (best-effort).
+
+    ``default_excluded_status`` (config, default empty) names status values —
+    e.g. ``["needs-review"]`` — excluded from DEFAULT search: chunks carrying one
+    are dropped by a post-filter (mirroring the ``tags`` pattern), and the dense
+    pool is widened like ``tag_fetch_k`` so the post-filter has candidates. The
+    exclusion is skipped when the caller gives an explicit ``status`` constraint
+    (the opt-in ``--status needs-review`` path is unaffected) or passes
+    ``include_unreviewed=True``. Any returned record whose status is in that set
+    carries a derived ``unreviewed`` boolean marker (surfaced by the CLI/API);
+    with the key absent/empty, search is byte-identical to pre-change behaviour.
     """
     # Resolve the active filter + tag list from either the neutral DTO
     # (preferred) or the legacy filters/tags kwargs. An empty DTO collapses to
@@ -160,6 +171,19 @@ def search(
 
     if config is None:
         config = load_config()
+
+    # Resolve the needs-review-style default exclusion. It is active only when
+    # the profile configures excluded statuses AND the caller did not opt in
+    # (include_unreviewed) AND gave no explicit status constraint — so the
+    # opt-in `--status needs-review` path and an empty config are untouched.
+    excluded_status = {
+        str(s) for s in (config.get("default_excluded_status") or []) if str(s)
+    }
+    explicit_status = bool(retrieval_filter is not None and retrieval_filter.status)
+    exclude_active = bool(
+        excluded_status and not include_unreviewed and not explicit_status
+    )
+
     model_name = config.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
     if model is None:
         model = get_model(model_name, revision=config.get("embedding_revision") or None)
@@ -180,6 +204,11 @@ def search(
     # to give the post-filter enough candidates to keep. Best-effort: a very rare
     # tag may still under-return within this pool.
     if tag_list:
+        fetch_k = max(fetch_k, int(config.get("tag_fetch_k", 200)))
+    # The default status exclusion is also a post-filter, so widen the pool the
+    # same way tags do — otherwise excluding needs-review chunks could leave the
+    # top-k short. Reuse the tag_fetch_k floor (same best-effort guarantee).
+    if exclude_active:
         fetch_k = max(fetch_k, int(config.get("tag_fetch_k", 200)))
     # Hybrid widens BOTH the dense and lexical pools independent of n_results, so
     # RRF has depth to rescue a dense miss with a lexical hit (and vice-versa).
@@ -234,6 +263,16 @@ def search(
                 }
             ]
 
+    # Default status exclusion post-filter (before rerank, like tags): when
+    # active, drop any record whose status is in default_excluded_status (e.g.
+    # needs-review). Skipped on the opt-in paths (explicit --status /
+    # include_unreviewed) and byte-identical to pre-change when the set is empty.
+    if exclude_active:
+        records = [
+            r for r in records
+            if str(r["metadata"].get("status") or "") not in excluded_status
+        ]
+
     # Cross-encoder rerank: score each (raw query, chunk) pair and reorder, then
     # trim to n_results. The reranker sees the natural query — never the
     # embedding-side instruction prefix.
@@ -248,6 +287,16 @@ def search(
             records.append(rec)
     else:
         records = records[:n_results]
+
+    # Structured marker: tag any returned record whose status is in the profile's
+    # excluded set (e.g. needs-review). This is derived (not stored) and is what
+    # the CLI/API surface so a chunk returned under --include-unreviewed is
+    # visibly flagged. Only set when the profile configures excluded statuses.
+    if excluded_status:
+        for rec in records:
+            rec["unreviewed"] = (
+                str(rec["metadata"].get("status") or "") in excluded_status
+            )
 
     # Privacy: the raw query text is NOT logged by default (it fans out to a
     # text file + SQLite). Set `log_queries: true` in config to log it verbatim
@@ -296,6 +345,10 @@ def main():
     parser.add_argument("--tag", action="append", default=None, metavar="TAG",
                         help="Keep only chunks carrying this tag (exact match, "
                              "case-insensitive). Repeatable; multiple --tag = AND.")
+    parser.add_argument("--include-unreviewed", dest="include_unreviewed",
+                        action="store_true",
+                        help="Disable the default status exclusion "
+                             "(default_excluded_status, e.g. needs-review) for this call.")
     parser.add_argument("--json", dest="output_json", action="store_true",
                         help="Output results as a JSON array")
     rr = parser.add_mutually_exclusive_group()
@@ -325,11 +378,17 @@ def main():
         tags=args.tag,
     )
     records = search(query, args.n_results, retrieval_filter=retrieval_filter,
-                     config=config, rerank=rerank, hybrid=args.hybrid)
+                     config=config, rerank=rerank, hybrid=args.hybrid,
+                     include_unreviewed=args.include_unreviewed)
 
     if args.output_json:
         output = [
-            {"distance": r["distance"], "document": r["document"], **r["metadata"]}
+            {
+                "distance": r["distance"],
+                "document": r["document"],
+                **({"unreviewed": r["unreviewed"]} if "unreviewed" in r else {}),
+                **r["metadata"],
+            }
             for r in records
         ]
         print(json.dumps(output, indent=2, ensure_ascii=False))
@@ -351,7 +410,8 @@ def main():
     for i, r in enumerate(records, start=1):
         doc, meta, distance = r["document"], r["metadata"], r["distance"]
         print("=" * 80)
-        print(f"{i}. {meta.get('title')} - {meta.get('heading')}")
+        _warn = "  ⚠ unreviewed" if r.get("unreviewed") else ""
+        print(f"{i}. {meta.get('title')} - {meta.get('heading')}{_warn}")
         print(f"Path: {meta.get('path')}")
         _sub = meta.get('subdomain')
         print(f"Type: {meta.get('type')} | Domain: {meta.get('domain')}" + (f" / {_sub}" if _sub else "") + f" | Status: {meta.get('status')} | Confidence: {meta.get('confidence')}")

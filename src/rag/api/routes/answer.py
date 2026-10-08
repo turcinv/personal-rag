@@ -90,6 +90,7 @@ def answer(
             model=state["model"],
             store=state["store"],
             rerank=rerank,
+            include_unreviewed=request.include_unreviewed,
         )
 
     reranked = rerank and any("rerank_score" in r for r in records)

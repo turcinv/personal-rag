@@ -75,6 +75,10 @@ rerank_default: false
 # (Chroma 0.6.3 can't query the comma-joined tags string), so the pool must be wide
 # enough that matches survive the post-filter. Only applies when tags are supplied.
 tag_fetch_k: 200
+# Statuses excluded from DEFAULT search (post-filter in query.search); opt back
+# in per call with rag-query --include-unreviewed / "include_unreviewed": true.
+# Empty/omitted = no exclusion. See .specs/keeping-it-true.md §2.
+default_excluded_status: ["needs-review"]
 # ── BM25 hybrid (experimental, off by default) ────────────────────────────────
 # When rag-query --hybrid / make eval ARGS=--hybrid is used, search() fuses a BM25
 # lexical pool (SQLite FTS5, built by `make build-lexical` into ./lexical_index/)

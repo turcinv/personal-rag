@@ -368,3 +368,107 @@ def test_cli_rerank_flags_are_mutually_exclusive(monkeypatch):
     monkeypatch.setattr("sys.argv", ["rag-query", "hi", "--rerank", "--no-rerank"])
     with pytest.raises(SystemExit):
         q.main()
+
+
+# ── needs-review default exclusion + include_unreviewed opt-in (spec §2) ─────────
+
+
+class FakeStoreWithStatus:
+    """Like FakeStore but each doc carries a `status` metadata value."""
+
+    def __init__(self, docs_status):
+        self.docs_status = docs_status   # list of (doc, status_string)
+        self.last_k = None
+
+    def query(self, embedding, k, where=None, *, text=None, hybrid=False):
+        self.last_k = k
+        picked = self.docs_status[:k]
+        return [
+            {"document": d, "metadata": {"title": d, "path": d, "status": s},
+             "distance": 0.1 * i}
+            for i, (d, s) in enumerate(picked)
+        ]
+
+
+_EXCL_CFG = {"embedding_model": "x", "default_excluded_status": ["needs-review"]}
+
+
+def test_default_search_excludes_needs_review():
+    store = FakeStoreWithStatus([
+        ("good", "processed"),
+        ("draft", "needs-review"),   # excluded by default
+    ])
+    recs = q.search("topic", n_results=10, config=_EXCL_CFG,
+                    model=_fake_model(), store=store, rerank=False)
+    assert [r["document"] for r in recs] == ["good"]
+    # the surviving record is marked not-unreviewed
+    assert recs[0]["unreviewed"] is False
+
+
+def test_include_unreviewed_returns_and_marks_it():
+    store = FakeStoreWithStatus([
+        ("good", "processed"),
+        ("draft", "needs-review"),
+    ])
+    recs = q.search("topic", n_results=10, config=_EXCL_CFG,
+                    model=_fake_model(), store=store, rerank=False,
+                    include_unreviewed=True)
+    assert [r["document"] for r in recs] == ["good", "draft"]
+    marks = {r["document"]: r["unreviewed"] for r in recs}
+    assert marks == {"good": False, "draft": True}
+
+
+def test_explicit_status_needs_review_still_works():
+    """The opt-in --status needs-review path is unaffected by the default exclusion."""
+    from rag.retrieval import RetrievalFilter
+
+    store = FakeStoreWithStatus([
+        ("draft", "needs-review"),
+        ("good", "processed"),
+    ])
+    rf = RetrievalFilter.create(status="needs-review")
+    recs = q.search("topic", n_results=10, config=_EXCL_CFG,
+                    model=_fake_model(), store=store, rerank=False,
+                    retrieval_filter=rf)
+    # The store double does not itself apply the where-clause; what matters is
+    # that search() did NOT post-filter needs-review away when status is explicit.
+    assert "draft" in [r["document"] for r in recs]
+
+
+def test_empty_excluded_status_is_byte_identical_to_today():
+    store = FakeStoreWithStatus([
+        ("good", "processed"),
+        ("draft", "needs-review"),
+    ])
+    cfg = {"embedding_model": "x"}  # key absent ⇒ no exclusion, no marker
+    recs = q.search("topic", n_results=10, config=cfg,
+                    model=_fake_model(), store=store, rerank=False)
+    assert [r["document"] for r in recs] == ["good", "draft"]
+    assert all("unreviewed" not in r for r in recs)
+
+
+def test_exclusion_widens_dense_pool_like_tags():
+    store = FakeStoreWithStatus([(f"doc{i}", "processed") for i in range(5)])
+    q.search("q", n_results=5,
+             config={"embedding_model": "x", "default_excluded_status": ["needs-review"],
+                     "tag_fetch_k": 200},
+             model=_fake_model(), store=store, rerank=False)
+    assert store.last_k == 200           # widened because exclusion is active
+
+
+def test_include_unreviewed_does_not_widen_or_filter():
+    # Opt-in disables the exclusion, so no widening (and no post-filter).
+    store = FakeStoreWithStatus([(f"doc{i}", "needs-review") for i in range(5)])
+    recs = q.search("q", n_results=5, config=_EXCL_CFG, model=_fake_model(),
+                    store=store, rerank=False, include_unreviewed=True)
+    assert store.last_k == 5
+    assert len(recs) == 5                # nothing filtered out
+
+
+def test_cli_include_unreviewed_wires_through(monkeypatch):
+    calls = _run_cli(monkeypatch, ["rag-query", "hello", "--include-unreviewed"],
+                     {"embedding_model": "x"})
+    assert calls["include_unreviewed"] is True
+
+    calls = _run_cli(monkeypatch, ["rag-query", "hello"], {"embedding_model": "x"})
+    assert calls["include_unreviewed"] is False

@@ -70,7 +70,7 @@ async def reject_unknown_search_arguments(ctx, call_next):
         if ctx.params.get("name") == "search":
             arguments = ctx.params.get("arguments") or {}
             if isinstance(arguments, Mapping):
-                unknown = set(arguments) - {"query", "n_results"}
+                unknown = set(arguments) - {"query", "n_results", "include_unreviewed"}
                 if unknown:
                     names = ", ".join(sorted(str(name) for name in unknown))
                     raise MCPError(
@@ -92,12 +92,15 @@ def search(
     query: QueryText,
     ctx: Context[AppContext],
     n_results: ResultCount = 8,
+    include_unreviewed: bool = False,
 ) -> list[dict[str, Any]]:
     """Search the local knowledge base for passages relevant to a question.
 
     Returns complete retrieval records, including each passage's full text,
     metadata, distance, rank, and rerank score when the active profile enables
     reranking. Use a small result count unless more context is necessary.
+    Set ``include_unreviewed`` to also return notes the profile excludes by
+    default (e.g. status needs-review); such records carry an ``unreviewed`` flag.
     """
     state = ctx.request_context.lifespan_context
     # The MCP surface is intentionally query-only: no metadata filters and no
@@ -110,6 +113,7 @@ def search(
         model=state.model,
         store=state.store,
         rerank=rag_query.rerank_default(state.config),
+        include_unreviewed=include_unreviewed,
     )
 
 
