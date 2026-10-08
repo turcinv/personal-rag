@@ -69,4 +69,15 @@ else
     fi
 fi
 
+# Combine signals. host-side behind/dirty is observed drift (exit 1). The
+# container drift returns 1 (drift) or 2 (could-not-verify); drift wins over
+# could-not-verify. Exit non-zero so `systemctl --user --failed` surfaces it.
+if [ "$host_git_drift" -ne 0 ] || [ "$drift_rc" -eq 1 ]; then
+    log "RESULT drift detected (git_drift=$host_git_drift container_rc=$drift_rc); exiting 1"
+    exit 1
+elif [ "$drift_rc" -ne 0 ]; then
+    log "RESULT could not verify (container_rc=$drift_rc); exiting $drift_rc"
+    exit "$drift_rc"
+fi
+log "RESULT no drift"
 exit 0

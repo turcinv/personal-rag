@@ -119,6 +119,19 @@ def test_drift_receives_skip_git(tmp_path):
     assert "--skip-git" in passed, f"drift must receive --skip-git, got {passed}"
 
 
+def test_container_drift_nonzero_propagates(tmp_path):
+    # When container drift reports drift (exit 1), the script must NOT swallow it:
+    # it exits 1 so `systemctl --user --failed` shows the unit failed.
+    bare, vault = _make_vault_and_bare(tmp_path)
+    _advance_bare(bare, tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    marker = tmp_path / "indexed"
+    argv = tmp_path / "drift_argv"
+    r = _run(vault, repo, marker, drift_argv=argv, drift_rc=1)
+    assert r.returncode == 1, f"drift exit 1 must propagate; got {r.returncode}\n{r.stdout}"
+
+
 def test_no_change_skips_index(tmp_path):
     _bare, vault = _make_vault_and_bare(tmp_path)  # vault already at origin/main
     repo = tmp_path / "repo"
