@@ -241,3 +241,74 @@ def test_main_exits_zero_when_in_sync(tmp_path, capsys, monkeypatch):
     with pytest.raises(SystemExit) as exc:
         drift.main()
     assert exc.value.code == 0
+
+
+# ── §0b: --remote origin against a LOCAL bare repo (Jetson sync model) ────────
+
+def _git(args, cwd):
+    import subprocess
+    subprocess.run(["git", "-C", str(cwd), *args], check=True,
+                   capture_output=True, text=True)
+
+
+def _init_vault_with_local_bare_remote(root):
+    """Build a vault git repo + a local bare 'origin' it fast-forwards from.
+
+    Mirrors the Jetson layout: the vault working copy has a single remote
+    'origin' pointing at a local bare repo path (no network), exactly what
+    `rag-drift --remote origin` must handle."""
+    import subprocess
+
+    bare = root / "career-knowledge-base.git"
+    vault = root / "vault"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)],
+                   check=True, capture_output=True, text=True)
+    subprocess.run(["git", "init", "-b", "main", str(vault)],
+                   check=True, capture_output=True, text=True)
+    _git(["config", "user.email", "t@example.com"], vault)
+    _git(["config", "user.name", "Test"], vault)
+    (vault / "note.md").write_text("one\n", encoding="utf-8")
+    _git(["add", "note.md"], vault)
+    _git(["commit", "-m", "init"], vault)
+    _git(["remote", "add", "origin", str(bare)], vault)
+    _git(["push", "origin", "main"], vault)
+    return bare, vault
+
+
+def test_git_upstream_local_bare_remote_in_sync(tmp_path):
+    _, vault = _init_vault_with_local_bare_remote(tmp_path)
+    git = drift.check_git_upstream(vault, remote="origin")
+    assert git.state == "ok"
+    assert git.is_git is True
+    assert git.remote == "origin"
+    assert git.ahead == 0 and git.behind == 0 and git.dirty == 0
+    assert git.drift is False
+
+
+def test_git_upstream_local_bare_remote_behind(tmp_path):
+    bare, vault = _init_vault_with_local_bare_remote(tmp_path)
+    # Advance the bare repo via a second clone, so the vault is now behind origin.
+    import subprocess
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", str(bare), str(other)],
+                   check=True, capture_output=True, text=True)
+    _git(["config", "user.email", "t@example.com"], other)
+    _git(["config", "user.name", "Test"], other)
+    (other / "note.md").write_text("one\ntwo\n", encoding="utf-8")
+    _git(["commit", "-am", "advance"], other)
+    _git(["push", "origin", "main"], other)
+
+    git = drift.check_git_upstream(vault, remote="origin")
+    assert git.state == "ok"
+    assert git.behind == 1
+    assert git.ahead == 0
+    assert git.drift is True  # behind > 0 => drift
+
+
+def test_git_upstream_local_bare_remote_dirty(tmp_path):
+    _, vault = _init_vault_with_local_bare_remote(tmp_path)
+    (vault / "note.md").write_text("dirty edit\n", encoding="utf-8")
+    git = drift.check_git_upstream(vault, remote="origin")
+    assert git.state == "ok"
+    assert git.dirty == 1
+    assert git.drift is True

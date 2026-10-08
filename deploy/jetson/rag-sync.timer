@@ -1,0 +1,9 @@
+[Unit]
+Description=Schedule vault sync + reindex + drift a few times a day
+
+[Timer]
+OnCalendar=06,12,18:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

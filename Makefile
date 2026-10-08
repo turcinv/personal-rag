@@ -9,7 +9,8 @@
         docker-extract docker-enrich docker-build-index docker-build-notes docker-build-books-index \
         docker-build-sqlite docker-build-vault-index docker-dup-detect docker-link-mocs \
         jetson-extract jetson-enrich jetson-build-index jetson-build-notes jetson-build-books-index \
-        jetson-build-sqlite jetson-build-vault-index jetson-dup-detect jetson-link-mocs
+        jetson-build-sqlite jetson-build-vault-index jetson-dup-detect jetson-link-mocs \
+        jetson-sync-install jetson-sync-uninstall
 
 PYTHON := .venv/bin/python
 Q      ?=
@@ -84,6 +85,8 @@ help:
 	@echo "  make jetson-stats [ARGS=...]    index statistics on Jetson"
 	@echo "  make jetson-serve               run the HTTP API container (port 8000)"
 	@echo "  make jetson-extract / jetson-enrich / jetson-build-index ..."
+	@echo "  make jetson-sync-install        install the vault-sync systemd user timer (on the Jetson)"
+	@echo "  make jetson-sync-uninstall      remove the vault-sync systemd user timer (leaves the remote)"
 	@echo ""
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
@@ -358,3 +361,28 @@ jetson-dup-detect:
 
 jetson-link-mocs:
 	docker compose -f docker-compose.jetson.yml run --rm rag rag-pipeline --stage link-mocs --no-deps $(ARGS)
+
+# ── Jetson vault-sync systemd user timer (run ON the Jetson) ─────────────────
+# Overridable: JETSON_VAULT_DIR, JETSON_BARE_REPO, JETSON_SYNC_REMOTE.
+JETSON_VAULT_DIR ?= $(HOME)/personal_knowledge/Career Knowledge Base
+JETSON_BARE_REPO ?= $(HOME)/git/career-knowledge-base.git
+JETSON_SYNC_REMOTE ?= origin
+SYSTEMD_USER_DIR := $(HOME)/.config/systemd/user
+
+jetson-sync-install:
+	@git -C "$(JETSON_VAULT_DIR)" remote get-url $(JETSON_SYNC_REMOTE) >/dev/null 2>&1 \
+		&& echo "remote $(JETSON_SYNC_REMOTE) already present; leaving it" \
+		|| (echo "adding remote $(JETSON_SYNC_REMOTE) -> $(JETSON_BARE_REPO)"; \
+		    git -C "$(JETSON_VAULT_DIR)" remote add $(JETSON_SYNC_REMOTE) "$(JETSON_BARE_REPO)")
+	mkdir -p "$(SYSTEMD_USER_DIR)"
+	cp deploy/jetson/rag-sync.service deploy/jetson/rag-sync.timer "$(SYSTEMD_USER_DIR)/"
+	chmod +x deploy/jetson/rag-sync.sh
+	systemctl --user daemon-reload
+	systemctl --user enable --now rag-sync.timer
+	systemctl --user list-timers rag-sync.timer --no-pager
+
+jetson-sync-uninstall:
+	-systemctl --user disable --now rag-sync.timer
+	rm -f "$(SYSTEMD_USER_DIR)/rag-sync.service" "$(SYSTEMD_USER_DIR)/rag-sync.timer"
+	systemctl --user daemon-reload
+	@echo "units removed; remote $(JETSON_SYNC_REMOTE) left in place"

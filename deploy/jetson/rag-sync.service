@@ -1,0 +1,8 @@
+[Unit]
+Description=Pull the vault, reindex if changed, and report drift
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/personal-rag/deploy/jetson/rag-sync.sh
