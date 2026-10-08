@@ -6,7 +6,7 @@ import argparse
 import json
 import subprocess
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -337,7 +337,7 @@ def main() -> None:
     else:
         exit_code = 0
 
-    generated_at = datetime.now(UTC).isoformat()
+    generated_at = datetime.now(timezone.utc).isoformat()
     if args.output_json:
         print(
             json.dumps(

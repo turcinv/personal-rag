@@ -354,3 +354,29 @@ def test_skip_git_source_drift_still_exits_1(tmp_path, capsys, monkeypatch):
         drift.main()
     assert exc.value.code == 1
     assert "DRIFT DETECTED" in capsys.readouterr().out
+
+
+# `from datetime import UTC` only exists on Python 3.11+. The Jetson image runs
+# 3.10 (requires-python ">=3.10", ruff target-version py310), so such an import
+# crashes the module on import there. drift.py used it once and broke rag-drift;
+# this guard fails if it (or any future UTC import) comes back anywhere in src/.
+def test_no_datetime_utc_import_in_src():
+    import re
+
+    repo_root = Path(__file__).resolve().parents[1]
+    rag_src = repo_root / "src"
+    # Matches `from datetime import UTC` with UTC as an imported name in any
+    # position (e.g. "UTC, datetime" or "datetime, UTC"), but not a longer
+    # identifier like MYUTC.
+    pattern = re.compile(r"from\s+datetime\s+import\s+[^\n]*\bUTC\b")
+
+    offenders = []
+    for path in sorted(rag_src.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if pattern.search(text):
+            offenders.append(str(path.relative_to(repo_root)))
+
+    assert offenders == [], (
+        "`from datetime import UTC` is Python 3.11+ only and breaks on the "
+        f"Jetson's 3.10; use `timezone.utc` instead. Offenders: {offenders}"
+    )
