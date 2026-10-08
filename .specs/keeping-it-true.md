@@ -327,11 +327,22 @@ Reuse the existing reconciliation classifier **read-only** — do not re-embed.
   for machine output, human table otherwise.
 
 ### Exit code & cron-readiness  [Proposal]
-- Exit `0` = no drift; exit non-zero (`1`) = any drift bucket non-empty or the
-  git sub-check reports behind/dirty. "unknown" sub-checks do **not** force
-  non-zero on their own but are printed. This lets a later cron
-  (`cron_add script=…` or a Jetson systemd timer) alert on drift. The command
+- Exit `0` = no drift and every requested sub-check actually ran. Exit `1` =
+  drift: any drift bucket non-empty or the git sub-check reports behind/dirty.
+  Exit `2` = **could not verify**: no drift was observed, but at least one
+  sub-check could not run — the git check is `unknown` (not a git work tree, or
+  upstream unreachable) or a requested source was not `available` for
+  enumeration (e.g. the Jetson vault-mount failure). A `2` prints
+  `COULD NOT VERIFY — <reasons>` so a cron does not read an unverifiable run as
+  green. Drift wins: if drift is observed, the exit is `1` even when another
+  sub-check is `unknown`. This lets a later cron (`cron_add script=…` or a
+  Jetson systemd timer) alert on both drift and could-not-verify. The command
   itself schedules nothing — scheduling is out of scope here.
+- **[Observed]** The git sub-check runs `git fetch --quiet <remote>`, which
+  updates the local remote-tracking refs (`refs/remotes/<remote>/*`) — so the
+  command is **not strictly read-only against the local git metadata**, though
+  it never mutates the index, the store, or the working tree. The fetch is
+  otherwise harmless and is what makes the ahead/behind comparison meaningful.
 - **[Proposal]** Read-only guarantee: `rag-drift` takes **no** `IndexWriterLock`
   (consistent with `--dry-run` in `indexer.py`, which is lock-free —
   `src/rag/indexer.py:286`), opens the store for reads, and the temp catalog is
@@ -339,10 +350,12 @@ Reuse the existing reconciliation classifier **read-only** — do not re-embed.
   `src/rag/reconciliation.py:110`).
 
 ### Tests  [Proposal]
-`tests/test_drift.py`: (i) in-sync fixture → empty buckets, exit 0; (ii) add a
-file not in the index → reported missing, exit 1; (iii) change one note's body →
-that note reported, exit 1; (iv) non-git `vault_path` → git sub-check "unknown",
-no crash. Reuse the store doubles already in `tests/test_indexing.py` /
+`tests/test_drift.py`: (i) in-sync fixture (git forced OK) → empty buckets,
+exit 0; (ii) add a file not in the index → reported missing, exit 1; (iii)
+change one note's body → that note reported, exit 1; (iv) non-git `vault_path`
+→ git sub-check "unknown", no crash, exit 2 ("COULD NOT VERIFY"); (v) an
+unavailable/unknown source → exit 2; (vi) drift present with git unknown → exit
+1 (drift wins). Reuse the store doubles already in `tests/test_indexing.py` /
 `tests/test_provenance.py`.
 
 ---

@@ -156,13 +156,86 @@ def test_main_exits_nonzero_on_drift(tmp_path, capsys, monkeypatch):
     assert "DRIFT DETECTED" in capsys.readouterr().out
 
 
-def test_main_exits_zero_when_in_sync(tmp_path, capsys, monkeypatch):
+def test_main_drift_wins_over_could_not_verify(tmp_path, capsys, monkeypatch):
+    # Source drift present AND git unknown: drift (exit 1) must win over the
+    # could-not-verify signal (exit 2) — an observed drift is the stronger fact.
+    vault = tmp_path / "vault"
+    index_path = tmp_path / "idx"
+    _write_note(vault, "a.md", "word " * 300)
+    config = _config(vault, index_path)
+    _seed_index(config)
+    _write_note(vault, "b.md", "fresh " * 300)  # missing from index -> drift
+
+    monkeypatch.setattr(drift, "_run_git", lambda args, cwd: None)  # git unknown
+    monkeypatch.setattr(drift, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["rag-drift"])
+    with pytest.raises(SystemExit) as exc:
+        drift.main()
+    assert exc.value.code == 1
+    assert "DRIFT DETECTED" in capsys.readouterr().out
+
+
+def test_main_exits_2_on_non_git_vault(tmp_path, capsys, monkeypatch):
+    # In sync (no drift) but the git sub-check cannot run (non-git vault): the
+    # command must NOT report a green "no drift" — exit 2, "COULD NOT VERIFY".
     vault = tmp_path / "vault"
     index_path = tmp_path / "idx"
     _write_note(vault, "a.md", "word " * 300)
     config = _config(vault, index_path)
     _seed_index(config)
 
+    monkeypatch.setattr(drift, "_run_git", lambda args, cwd: None)  # not a git tree
+    monkeypatch.setattr(drift, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["rag-drift"])
+    with pytest.raises(SystemExit) as exc:
+        drift.main()
+    assert exc.value.code == 2
+    out = capsys.readouterr().out
+    assert "COULD NOT VERIFY" in out
+    assert "git check" in out
+
+
+def test_main_exits_2_on_unavailable_source(tmp_path, capsys, monkeypatch):
+    # The git sub-check is forced OK, but a requested source cannot be enumerated
+    # (unknown source id stands in for the unavailable-vault case): exit 2.
+    vault = tmp_path / "vault"
+    index_path = tmp_path / "idx"
+    _write_note(vault, "a.md", "word " * 300)
+    config = _config(vault, index_path)
+    _seed_index(config)
+
+    monkeypatch.setattr(
+        drift,
+        "check_git_upstream",
+        lambda vault_path, remote=drift.DEFAULT_REMOTE: drift.GitStatus(
+            state="ok", is_git=True, ahead=0, behind=0, dirty=0
+        ),
+    )
+    monkeypatch.setattr(drift, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["rag-drift", "--source", "markdown:nope"])
+    with pytest.raises(SystemExit) as exc:
+        drift.main()
+    assert exc.value.code == 2
+    out = capsys.readouterr().out
+    assert "COULD NOT VERIFY" in out
+    assert "markdown:nope" in out
+
+
+def test_main_exits_zero_when_in_sync(tmp_path, capsys, monkeypatch):
+    # In sync AND git verifiable (forced OK): the only path to a green exit 0.
+    vault = tmp_path / "vault"
+    index_path = tmp_path / "idx"
+    _write_note(vault, "a.md", "word " * 300)
+    config = _config(vault, index_path)
+    _seed_index(config)
+
+    monkeypatch.setattr(
+        drift,
+        "check_git_upstream",
+        lambda vault_path, remote=drift.DEFAULT_REMOTE: drift.GitStatus(
+            state="ok", is_git=True, ahead=0, behind=0, dirty=0
+        ),
+    )
     monkeypatch.setattr(drift, "load_config", lambda: config)
     monkeypatch.setattr("sys.argv", ["rag-drift", "--json"])
     with pytest.raises(SystemExit) as exc:

@@ -289,12 +289,34 @@ def main() -> None:
     git, sources = run_drift(config, source_ids, remote=args.remote)
 
     drift = git.drift or any(sd.drift for sd in sources)
+
+    # A sub-check that could not actually run (git "unknown", or a source that
+    # was not "available" for enumeration — e.g. the Jetson vault-mount failure)
+    # must NOT read as a green "no drift". Collect those reasons; drift (exit 1)
+    # still wins over could-not-verify (exit 2), because an observed drift is a
+    # strictly stronger signal than an unverifiable sub-check.
+    unverifiable = []
+    if git.state != "ok":
+        unverifiable.append(f"git check: {git.detail or 'unknown'}")
+    for sd in sources:
+        if sd.state != "available":
+            unverifiable.append(f"source {sd.source_id}: {sd.detail or sd.state}")
+
+    if drift:
+        exit_code = 1
+    elif unverifiable:
+        exit_code = 2
+    else:
+        exit_code = 0
+
     if args.output_json:
         print(
             json.dumps(
                 {
                     "generated_at": datetime.now(UTC).isoformat(),
                     "drift": drift,
+                    "could_not_verify": bool(unverifiable) and not drift,
+                    "unverifiable": unverifiable,
                     "git": git.as_dict(),
                     "sources": [sd.as_dict() for sd in sources],
                 },
@@ -305,9 +327,14 @@ def main() -> None:
     else:
         print(_format_report(git, sources))
         print()
-        print("DRIFT DETECTED" if drift else "no drift")
+        if drift:
+            print("DRIFT DETECTED")
+        elif unverifiable:
+            print("COULD NOT VERIFY — " + "; ".join(unverifiable))
+        else:
+            print("no drift")
 
-    raise SystemExit(1 if drift else 0)
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":
