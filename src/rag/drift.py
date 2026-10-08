@@ -217,8 +217,8 @@ def check_source_drift(config: dict, source_id: str = "markdown:vault") -> Sourc
     )
 
 
-def _format_report(git: GitStatus, sources: List[SourceDrift]) -> str:
-    lines = [f"Drift report — {datetime.now(UTC).isoformat()}", ""]
+def _format_report(git: GitStatus, sources: List[SourceDrift], generated_at: str) -> str:
+    lines = [f"Drift report — {generated_at}", ""]
     lines.append("Source checkout vs upstream:")
     if git.state == "unknown":
         lines.append(f"  unknown — {git.detail}")
@@ -309,11 +309,12 @@ def main() -> None:
     else:
         exit_code = 0
 
+    generated_at = datetime.now(UTC).isoformat()
     if args.output_json:
         print(
             json.dumps(
                 {
-                    "generated_at": datetime.now(UTC).isoformat(),
+                    "generated_at": generated_at,
                     "drift": drift,
                     "could_not_verify": bool(unverifiable) and not drift,
                     "unverifiable": unverifiable,
@@ -325,7 +326,7 @@ def main() -> None:
             )
         )
     else:
-        print(_format_report(git, sources))
+        print(_format_report(git, sources, generated_at))
         print()
         if drift:
             print("DRIFT DETECTED")
