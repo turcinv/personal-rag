@@ -456,27 +456,50 @@ catch-up rather than treating a shift as a regression.
 - **[Observed]** A stale-trap needs the *wrong* note to be penalised, but
   `is_hit` only rewards a positive substring match — there is no notion of a
   "must-not-return" note or of ranking a current note above a superseded one.
-- **[Proposal]** Extend the record schema with an optional `kind: "stale-trap"`
-  and a `must_not` list (substrings of the superseded / `needs-review` note's
-  title or path). Score a stale-trap query as **passed** iff the first hit is an
-  `expected` (current) note **and** no `must_not` note appears above it (ideally
-  not in the top-k at all). Keep `expected`/`is_hit` semantics for existing
-  rows; `must_not` defaults to empty so all 45 current rows are unaffected.
-- **[Proposal]** Report stale-traps **separately**: because `by_kind` already
-  partitions by `kind`, a `kind: "stale-trap"` row set is reported on its own
-  line automatically; add an explicit `stale_trap` summary block
-  (passed/total) so a regression is obvious. `make eval` output and the JSON
-  (`--out`) both carry it.
-- **[Proposal]** Wire it so a stale-trap failing does **not** silently drag the
-  main recall numbers — keep it a distinct section, consistent with the
-  acceptance shape ("reports them separately").
 
-### Candidate note pairs — for Vít to confirm (DO NOT assume)  [Proposal]
-A stale-trap needs a *current* note and a *superseded or `needs-review*` note
-that answer the same question differently. I have **not** mined the vault for
-real contradictions in this plan (that is content work, and the rule is to not
-invent vault content). Shape of what to confirm, grounded in what the eval
-already covers and what the index shows:
+### Implemented mechanism (step 3, 2026-10-08) — schema + scoring, no golden rows
+- **[Implemented]** The record schema now carries an optional
+  `kind: "stale-trap"` and an optional `must_not` list (substrings of the
+  superseded / `needs-review` note's title or path). `must_not` defaults to
+  empty and only stale-trap rows read it, so all 45 existing rows are
+  byte-identical in behaviour.
+- **[Implemented]** Scoring (`stale_trap_passed`, `src/rag/eval.py`): a
+  stale-trap query **passes** iff the first `expected` (current) note is present
+  **and** no `must_not` note ranks strictly above it. A `must_not` note tying or
+  outranking the first expected hit fails; no expected hit at all fails.
+- **[Implemented]** Stale-trap rows are scored **separately** and never enter the
+  main recall/MRR aggregation: `evaluate()` routes `kind == "stale-trap"` rows
+  into a dedicated `stale_trap` block (`{passed, total, rows}`) that is reported
+  on its own line in the `make eval` console output and in the `--out` JSON. The
+  `overall` / `by_kind` numbers are computed from the non-trap rows only.
+- **[Implemented]** Tests in `tests/test_eval.py` prove: a correctly-ranked trap
+  passes; an inverted ranking fails **and has teeth** (the `expected` note is
+  present at rank 2, so a scorer that ignored `must_not` would wrongly pass — the
+  `must_not` note at rank 1 is the only reason it fails); and a stale-trap row
+  present alongside a normal vault row leaves the main `overall`/`by_kind`
+  metrics identical to running the vault row alone.
+
+### Golden rows — NOT added; format documented, pending Vít's confirmation
+No rows were added to `tests/eval/golden_queries.jsonl` — the note pairs are
+content work pending Vít's confirmation (the rule is to not invent vault
+content). When confirmed, each stale-trap is **one JSONL line** in this exact
+shape:
+
+```json
+{"query": "<the question>", "expected": ["<current note title substring>"], "must_not": ["<superseded / needs-review note title substring>"], "kind": "stale-trap"}
+```
+
+- `query` — the question whose answer differs between the current and superseded
+  notes.
+- `expected` — non-empty list of substrings matching the **current** note's
+  title or path (same `is_hit` semantics as the existing rows).
+- `must_not` — list of substrings matching the **superseded / `needs-review`**
+  note that must not rank above the current one. Omit or leave `[]` to make a
+  row behave like a plain positive-only query.
+- `kind` — literally `"stale-trap"` to route it into the separate block.
+
+List the exact note titles in each row so the trap is auditable. 2–3 rows as the
+prompt asks. Candidate pairs for Vít to confirm (DO NOT assume):
 1. **A `needs-review` vs `processed` pair on one topic.** 2 179 `needs-review`
    chunks exist; pick one whose topic also has a `processed` note, where the
    `needs-review` note states something the processed note corrects. (Candidate
@@ -487,16 +510,14 @@ already covers and what the index shows:
    superseded one is the trap).
 3. **A superseded SOP/decision** where a newer note records the change and an
    older note still describes the old procedure.
-- **[Proposal]** For each confirmed pair, add one JSONL row:
-  `{"query": "<the question>", "expected": ["<current note title>"],
-    "must_not": ["<superseded/needs-review note title>"], "kind": "stale-trap"}`.
-- **[Proposal]** 2–3 rows as the prompt asks; list the exact note titles in the
-  row so the trap is auditable.
 
-### Tests  [Proposal]
-`tests/test_eval.py` additions: a `kind: "stale-trap"` row with a synthetic
-store double where the current note ranks above the `must_not` note → passed;
-invert the ranking → failed; confirm existing rows' metrics are unchanged.
+### Tests  [Implemented]
+`tests/test_eval.py`: `stale_trap_passed` pure-logic cases; a `kind:
+"stale-trap"` row scored through `evaluate()` with a synthetic store double
+where the current note ranks above the `must_not` note → passed; inverted
+ranking → failed (with the teeth assertion above); and main metrics unchanged
+when a stale-trap row is present. The golden-set well-formedness test now admits
+the `stale-trap` kind and checks `must_not` is a list.
 
 ---
 
