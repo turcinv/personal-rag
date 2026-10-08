@@ -197,11 +197,24 @@ def build_fixture_store(config, tmp_dir, model):
     return store
 
 
+#: Note recorded on a result row when hybrid scoring was requested but skipped.
+HYBRID_SKIPPED_NOTE = "skipped (fixture store has no lexical index)"
+
+
 def _score_row(store, row, *, config, model, n, rerank, hybrid, include_unreviewed=False):
-    """Run one stale-trap row against the fixture store and build its result dict."""
+    """Run one stale-trap row against the fixture store and build its result dict.
+
+    The fixture store has no lexical index built (``make build-lexical`` is
+    never run against it) and its own dense index carries no vector-generation
+    provenance, so the client-side BM25 hybrid path (``query.py``) would either
+    raise (``read_index_state`` returns ``None``) or read the *production*
+    lexical index via ``get_lexical(config, ...)``. Neither is acceptable here,
+    so when ``hybrid`` is requested the row is scored dense-only and the skip is
+    recorded in ``result["hybrid"]`` instead of silently ignored.
+    """
     records = search(
         row["query"], n, store=store, config=config, model=model,
-        rerank=rerank, hybrid=hybrid, include_unreviewed=include_unreviewed,
+        rerank=rerank, hybrid=False, include_unreviewed=include_unreviewed,
     )
     expected, must_not = row["expected"], row.get("must_not", [])
     return {
@@ -212,6 +225,7 @@ def _score_row(store, row, *, config, model, n, rerank, hybrid, include_unreview
         "must_not_rank": first_hit_rank(records, must_not) if must_not else None,
         "passed": stale_trap_passed(records, expected, must_not),
         "baseline": bool(row.get("baseline", False)),
+        "hybrid": HYBRID_SKIPPED_NOTE if hybrid else None,
     }
 
 

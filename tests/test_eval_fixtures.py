@@ -43,11 +43,14 @@ def test_fixture_pages_shape():
         assert SYNTHETIC_MARKER in page["body"]
         assert page["status"] in {"needs-review", "processed"}
     assert set(topics) == {"t1", "t2", "t3"}
-    for topic, pages in topics.items():
-        assert len(pages) == 2, topic
-        statuses = sorted(p["status"] for p in pages)
-        # exactly one "current" (processed) page per topic
-        assert statuses.count("processed") >= 1, topic
+    # Per-topic status is asserted explicitly, not loosely: T1 and T3 pair a
+    # needs-review stale page with a processed current page, while T2 (the
+    # baseline) pairs two processed pages — personal-rag has no freshness signal
+    # to prefer the newer of two equally-processed notes (§4.5).
+    status_by_topic = {t: sorted(p["status"] for p in pages) for t, pages in topics.items()}
+    assert status_by_topic["t1"] == ["needs-review", "processed"], status_by_topic["t1"]
+    assert status_by_topic["t2"] == ["processed", "processed"], status_by_topic["t2"]
+    assert status_by_topic["t3"] == ["needs-review", "processed"], status_by_topic["t3"]
 
 
 def test_fixture_pages_meet_status_requirements():
@@ -135,3 +138,46 @@ def test_t2_baseline_is_expected_to_fail(real_model):
         records = search(row["query"], 10, store=store, config=FIXTURE_CONFIG,
                         model=real_model)
         assert stale_trap_passed(records, row["expected"], row["must_not"]) is True
+
+
+# ── hybrid=True must not crash the fixture harness (regression) ───────────────
+
+class _EmptyGoldenStore:
+    """Stand-in for the production store on the golden path, so evaluate() never
+    opens the real index. Holds no chunks — the empty golden list never queries
+    it; the fixture harness builds its own real store separately."""
+
+    def count(self):
+        return 0
+
+    def query(self, embedding, k, where=None, *, text=None, hybrid=False):
+        return []
+
+
+def test_evaluate_hybrid_does_not_crash_and_scores_fixtures(real_model, monkeypatch):
+    """evaluate(..., hybrid=True) must NOT raise and must still score the
+    fixture rows dense-only.
+
+    Pre-fix, run_stale_trap threaded hybrid=True into search() against the
+    fixture store, whose dense index carries no vector-generation provenance:
+    query.py's client-side BM25 path then hits read_index_state() -> None and
+    raises RuntimeError (query.py:227-234) — so this test FAILS on the old code.
+    Post-fix, hybrid is scored dense-only and noted as skipped.
+    """
+    import rag.eval as e
+
+    monkeypatch.setattr(e, "get_model", lambda name: real_model)
+    monkeypatch.setattr(e, "open_store", lambda *a, **k: _EmptyGoldenStore())
+
+    # Empty golden list: the main recall path does nothing; only the fixture
+    # harness runs. hybrid=True is the condition under test.
+    result = e.evaluate([], n=10, config=FIXTURE_CONFIG, hybrid=True)
+
+    st = result["stale_trap"]
+    assert st["total"] == 2, st                       # T1 + T3 still scored
+    assert len(st["baseline_rows"]) == 1              # T2 still scored
+    all_rows = st["rows"] + st["baseline_rows"]
+    assert all_rows, "fixture rows must still be scored under hybrid=True"
+    # Every fixture row records the hybrid skip note.
+    for r in all_rows:
+        assert r["hybrid"] == "skipped (fixture store has no lexical index)", r

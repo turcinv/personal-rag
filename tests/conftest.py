@@ -6,19 +6,11 @@ collect_ignore = ["test_queries.py"]
 import pytest
 
 
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "requires_model: test loads the real embedding model; skipped when it "
-        "is not already cached locally so `make test-unit` stays offline.",
-    )
-
-
 def _real_model_available():
     """True iff the real embedding model can load without a network download.
 
     Set the HF hub offline flags, then attempt a load from the local cache. A
-    cached model loads; an uncached one raises, and the requires_model tests are
+    cached model loads; an uncached one raises, and the real-model tests are
     skipped — preserving make test-unit's offline guarantee on a cold runner.
     """
     import os

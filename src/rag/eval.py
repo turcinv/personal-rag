@@ -197,6 +197,13 @@ def print_report(result, label=None):
     if st and (st["total"] or st.get("baseline_rows")):
         print("-" * 78)
         print(f"STALE-TRAP   {st['passed']}/{st['total']} passed")
+        # Fixture rows carry a per-row "hybrid" note when hybrid scoring was
+        # requested but skipped (the fixture store has no lexical index). Surface
+        # it once rather than per row — it is uniform across fixture rows.
+        all_rows = (st["rows"] or []) + (st.get("baseline_rows") or [])
+        hybrid_note = next((r["hybrid"] for r in all_rows if r.get("hybrid")), None)
+        if hybrid_note:
+            print(f"  hybrid: {hybrid_note}")
         for r in st["rows"]:
             mark = "PASS" if r["passed"] else "FAIL"
             q = r["query"] if len(r["query"]) <= 56 else r["query"][:55] + "…"
