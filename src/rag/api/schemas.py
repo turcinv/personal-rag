@@ -125,6 +125,7 @@ class Citation(BaseModel):
     domain: Optional[str] = None
     distance: Optional[float] = None
     rerank_score: Optional[float] = None
+    unreviewed: Optional[bool] = None
 
 
 class AnswerResponse(BaseModel):

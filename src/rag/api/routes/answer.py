@@ -49,6 +49,7 @@ def _citations(records: list) -> list:
                 domain=meta.get("domain"),
                 distance=r.get("distance"),
                 rerank_score=r.get("rerank_score"),
+                unreviewed=r.get("unreviewed"),
             )
         )
     return out
