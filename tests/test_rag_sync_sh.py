@@ -56,21 +56,35 @@ def _rev(vault):
                           capture_output=True, text=True).stdout.strip()
 
 
-def _run(vault, repo, index_marker):
+def _run(vault, repo, index_marker, drift_argv=None, drift_rc=0):
+    """Run the script with index/drift stubbed.
+
+    The drift stub records its own argv to ``drift_argv`` (when given) and exits
+    with ``drift_rc`` so tests can assert what the script passed to drift and how
+    it reacts to a non-zero drift."""
+    if drift_argv is not None:
+        drift_cmd = f'printf "%s\\n" "$@" > {drift_argv}; exit {drift_rc}'
+        drift_cmd = f'bash -c {_shq(drift_cmd)} _'
+    else:
+        drift_cmd = f"bash -c 'exit {drift_rc}'"
     env = {
         "RAG_SYNC_VAULT_DIR": str(vault),
         "RAG_SYNC_REPO_DIR": str(repo),
         "RAG_SYNC_REMOTE": "origin",
         "RAG_SYNC_BRANCH": "main",
-        # Stub the heavy steps: index touches a marker, drift is a noop.
+        # Stub the heavy steps: index touches a marker, drift is scripted.
         "RAG_SYNC_INDEX_CMD": f"touch {index_marker}",
-        "RAG_SYNC_DRIFT_CMD": "true",
+        "RAG_SYNC_DRIFT_CMD": drift_cmd,
         "PATH": os.environ["PATH"],
         "HOME": os.environ.get("HOME", str(repo)),
     }
     return subprocess.run(
         ["bash", str(SCRIPT)], env=env, capture_output=True, text=True,
     )
+
+
+def _shq(s):
+    return "'" + s.replace("'", "'\\''") + "'"
 
 
 @pytest.fixture(autouse=True)
@@ -88,6 +102,21 @@ def test_clean_ff_indexes_once(tmp_path):
     r = _run(vault, repo, marker)
     assert r.returncode == 0, r.stderr
     assert marker.exists(), "index step must run on a HEAD-moving fast-forward"
+
+
+def test_drift_receives_skip_git(tmp_path):
+    # The container drift step cannot do the git check; the script must pass
+    # --skip-git and run the git comparison on the host instead.
+    bare, vault = _make_vault_and_bare(tmp_path)
+    _advance_bare(bare, tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    marker = tmp_path / "indexed"
+    argv = tmp_path / "drift_argv"
+    r = _run(vault, repo, marker, drift_argv=argv)
+    assert argv.exists(), r.stderr
+    passed = argv.read_text().split("\n")
+    assert "--skip-git" in passed, f"drift must receive --skip-git, got {passed}"
 
 
 def test_no_change_skips_index(tmp_path):

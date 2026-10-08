@@ -222,6 +222,8 @@ def _format_report(git: GitStatus, sources: List[SourceDrift], generated_at: str
     lines.append("Source checkout vs upstream:")
     if git.state == "unknown":
         lines.append(f"  unknown — {git.detail}")
+    elif not git.is_git and git.detail.startswith("skipped"):
+        lines.append(f"  {git.detail}")
     else:
         flags = []
         if (git.behind or 0) > 0:
@@ -252,9 +254,28 @@ def _format_report(git: GitStatus, sources: List[SourceDrift], generated_at: str
     return "\n".join(lines)
 
 
-def run_drift(config: dict, source_ids: List[str], remote: str = DEFAULT_REMOTE):
-    """Run every drift sub-check and return ``(git_status, [source_drift, ...])``."""
-    git = check_git_upstream(Path(config["vault_path"]), remote=remote)
+def run_drift(
+    config: dict,
+    source_ids: List[str],
+    remote: str = DEFAULT_REMOTE,
+    skip_git: bool = False,
+):
+    """Run every drift sub-check and return ``(git_status, [source_drift, ...])``.
+
+    ``skip_git=True`` reports the git sub-check as "skipped" (state "ok", not
+    "unknown") so it neither contributes drift nor forces could-not-verify — for
+    callers that run the git comparison elsewhere, e.g. the Jetson container
+    where git/the bare repo/a writable vault are all unavailable.
+    """
+    if skip_git:
+        git = GitStatus(
+            state="ok",
+            is_git=False,
+            remote=remote,
+            detail="skipped (--skip-git); git checked on the host",
+        )
+    else:
+        git = check_git_upstream(Path(config["vault_path"]), remote=remote)
     sources = [check_source_drift(config, source_id=sid) for sid in source_ids]
     return git, sources
 
@@ -277,6 +298,13 @@ def main() -> None:
         help=f"Git remote to compare the vault checkout against (default: {DEFAULT_REMOTE}).",
     )
     parser.add_argument(
+        "--skip-git",
+        action="store_true",
+        help="Skip the git-upstream sub-check (reported 'skipped', never drift/exit 2). "
+        "For environments without git/the bare repo/a writable vault (e.g. the Jetson "
+        "container); run the git comparison on the host instead.",
+    )
+    parser.add_argument(
         "--json",
         dest="output_json",
         action="store_true",
@@ -286,7 +314,7 @@ def main() -> None:
 
     config = load_config()
     source_ids = args.source or ["markdown:vault"]
-    git, sources = run_drift(config, source_ids, remote=args.remote)
+    git, sources = run_drift(config, source_ids, remote=args.remote, skip_git=args.skip_git)
 
     drift = git.drift or any(sd.drift for sd in sources)
 

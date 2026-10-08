@@ -312,3 +312,45 @@ def test_git_upstream_local_bare_remote_dirty(tmp_path):
     assert git.state == "ok"
     assert git.dirty == 1
     assert git.drift is True
+
+
+def test_skip_git_reports_skipped_not_unknown(tmp_path, capsys, monkeypatch):
+    # --skip-git: the git sub-check is reported "skipped" (state ok, not git),
+    # so it neither contributes drift nor forces exit 2. In sync + skipped => 0.
+    vault = tmp_path / "vault"
+    index_path = tmp_path / "idx"
+    _write_note(vault, "a.md", "word " * 300)
+    config = _config(vault, index_path)
+    _seed_index(config)
+
+    # Prove it never touches git at all under --skip-git.
+    def _boom(*a, **k):
+        raise AssertionError("git must not be invoked under --skip-git")
+
+    monkeypatch.setattr(drift, "_run_git", _boom)
+    monkeypatch.setattr(drift, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["rag-drift", "--skip-git"])
+    with pytest.raises(SystemExit) as exc:
+        drift.main()
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "skipped" in out
+    assert "COULD NOT VERIFY" not in out
+
+
+def test_skip_git_source_drift_still_exits_1(tmp_path, capsys, monkeypatch):
+    # --skip-git does not mask a real source drift: the source sub-check still runs.
+    vault = tmp_path / "vault"
+    index_path = tmp_path / "idx"
+    _write_note(vault, "a.md", "word " * 300)
+    config = _config(vault, index_path)
+    _seed_index(config)
+    _write_note(vault, "b.md", "fresh " * 300)  # missing from index -> drift
+
+    monkeypatch.setattr(drift, "_run_git", lambda args, cwd: None)
+    monkeypatch.setattr(drift, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["rag-drift", "--skip-git"])
+    with pytest.raises(SystemExit) as exc:
+        drift.main()
+    assert exc.value.code == 1
+    assert "DRIFT DETECTED" in capsys.readouterr().out

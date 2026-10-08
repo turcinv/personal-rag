@@ -119,8 +119,14 @@ without a human remembering the SOP. Plan only — nothing here is installed.
   if it is missing**; it never rewrites an existing `origin`.
 - The sync service runs `git pull --ff-only origin main` on the vault, then (only
   if HEAD changed) `make jetson-index`, then
-  `rag-drift --remote origin` — so drift compares the **working copy against the
-  bare repo** it just pulled from.
+  `rag-drift --skip-git --remote origin` **in the container** for the index
+  sub-check only. The container has **no git**, the bare repo is not mounted, and
+  `/vault` is mounted read-only, so the git-upstream comparison cannot run there;
+  `--skip-git` reports git as "skipped" (never drift, never exit 2). The
+  **git-upstream check runs on the host** in `rag-sync.sh` after the pull
+  (`git rev-list --left-right --count HEAD...origin/main` + a `status --porcelain`
+  dirty check); **behind or dirty is treated as drift**. So the index-vs-source
+  gap is checked in the container and the checkout-vs-upstream gap on the host.
 - **Bare-repo staleness is out of scope here.** If macOS forgot to
   `git push jetson main`, the bare repo itself lags and `rag-drift --remote
   origin` will read "in sync" against a stale upstream. Closing that gap belongs

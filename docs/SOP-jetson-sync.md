@@ -192,7 +192,11 @@ each run, in order:
 2. `git pull --ff-only origin main` on the vault (never merge/force);
 3. reindex **only if HEAD moved** (`rag.indexer --wait-for-lock 600`, so it waits
    for a concurrent manual `make jetson-index` rather than failing);
-4. `rag-drift --remote origin` and log its exit code to the journal.
+4. `rag-drift --skip-git --remote origin` **in the container** (index-vs-source
+   sub-check only — the container has no git and a read-only vault), plus a
+   **host-side** git-upstream check (`behind origin/main` or a dirty tree ⇒
+   drift); the script exits with the drift code so a stale run is visible in both
+   the journal and `systemctl --user --failed`.
 
 ### The `origin` remote (one-time)
 

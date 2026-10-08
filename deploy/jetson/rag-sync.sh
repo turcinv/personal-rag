@@ -44,9 +44,29 @@ else
     log "index done"
 fi
 
-log "running drift"
+log "running container drift (--skip-git; git checked on host below)"
 drift_rc=0
-( cd "$REPO_DIR" && eval "$DRIFT_CMD" ) || drift_rc=$?
-log "drift exit $drift_rc"
+( cd "$REPO_DIR" && eval "$DRIFT_CMD --skip-git" ) || drift_rc=$?
+log "container drift exit $drift_rc"
+
+# Host-side git upstream check (the container has no git, no bare repo, and a
+# read-only vault mount). origin/main was just fetched by the pull above.
+host_git_drift=0
+after_dirty="$(git -C "$VAULT_DIR" status --porcelain)"
+if [ -n "$after_dirty" ]; then
+    log "git: vault working tree dirty after pull"
+    host_git_drift=1
+fi
+counts="$(git -C "$VAULT_DIR" rev-list --left-right --count "HEAD...$REMOTE/$BRANCH" 2>/dev/null || true)"
+if [ -z "$counts" ]; then
+    log "git: could not compare HEAD against $REMOTE/$BRANCH"
+    host_git_drift=1
+else
+    behind="$(echo "$counts" | awk '{print $2}')"
+    log "git: ${behind:-?} behind $REMOTE/$BRANCH"
+    if [ "${behind:-0}" -gt 0 ]; then
+        host_git_drift=1
+    fi
+fi
 
 exit 0
