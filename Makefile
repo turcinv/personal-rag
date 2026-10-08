@@ -1,4 +1,4 @@
-.PHONY: help install install-dev check lint typecheck test-coverage package-check config-doctor index build-lexical query eval stats pipeline-status sync-to-jetson test test-unit build build-jetson \
+.PHONY: help install install-dev check lint typecheck test-coverage package-check config-doctor index build-lexical query eval stats pipeline-status sync-to-jetson test test-unit build build-jetson drift \
         serve mcp mcp-docker pipeline docker-pipeline docker-serve jetson-serve \
         docker-index docker-query docker-test \
         jetson-pipeline-status jetson-full-pipeline \
@@ -38,6 +38,7 @@ help:
 	@echo "  make pipeline-status      check all extraction pipeline outputs"
 	@echo "  make eval [ARGS=...]      recall@k / MRR eval over golden_queries.jsonl"
 	@echo "  make stats [ARGS=...]     index statistics (chunk counts, source breakdown)"
+	@echo "  make drift [ARGS=...]     report-only drift between vault source and index (exit 1 on drift)"
 	@echo "  make serve                run the HTTP API locally (rag-serve, port 8000)"
 	@echo "  make mcp                  run the local stdio MCP search server"
 	@echo "  make sync-to-jetson       transfer the active validated generation to Jetson (set JETSON_HOST)"
@@ -156,6 +157,12 @@ eval:
 
 stats:
 	.venv/bin/rag-stats $(ARGS)
+
+# Report-only drift between the vault source and the index (read-only; embeds
+# nothing, never mutates the index). Exits non-zero when any drift is found, so
+# a later cron / Jetson timer can alert on it.
+drift:
+	.venv/bin/rag-drift $(ARGS)
 
 # Quiesced backup / verified restore of the index + sidecars (holds the writer lock).
 #   make backup DEST=backups/2026-08-20
