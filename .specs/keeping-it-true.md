@@ -436,6 +436,13 @@ explicit `--status needs-review` still works (opt-in path unaffected); (iv)
 
 ## 3. Stale-trap questions in `make eval`  [Proposal]
 
+**[Observed, 2026-10-08]** `eval.evaluate()` calls `search()` on its **default**
+behaviour (no `include_unreviewed`), so once §2 ships with
+`default_excluded_status: ["needs-review"]` active on the personal profile, eval
+measures retrieval *with* the exclusion and its recall numbers are **not
+comparable** to pre-branch baselines — re-baseline after the Jetson index
+catch-up rather than treating a shift as a regression.
+
 ### Current eval format  [Observed]
 - Golden set is JSONL at `tests/eval/golden_queries.jsonl`, one object per line:
   `{"query": ..., "expected": [substrings], "kind": "vault"|"resource"}`
