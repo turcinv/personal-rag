@@ -112,6 +112,27 @@ The drift check (§1) *detects* staleness; this section *prevents* it by closing
 the vault→Jetson→index loop on a schedule, so the served index tracks the vault
 without a human remembering the SOP. Plan only — nothing here is installed.
 
+### DECISION (Vít, approved 2026-10-08) — what step 4 implements
+- The Jetson vault gets a **one-time remote `origin`** →
+  `~/git/career-knowledge-base.git` (the local bare repo its reflog already
+  shows it fast-forwards from). `make jetson-sync-install` adds `origin` **only
+  if it is missing**; it never rewrites an existing `origin`.
+- The sync service runs `git pull --ff-only origin main` on the vault, then (only
+  if HEAD changed) `make jetson-index`, then
+  `rag-drift --remote origin` — so drift compares the **working copy against the
+  bare repo** it just pulled from.
+- **Bare-repo staleness is out of scope here.** If macOS forgot to
+  `git push jetson main`, the bare repo itself lags and `rag-drift --remote
+  origin` will read "in sync" against a stale upstream. Closing that gap belongs
+  on the **vault side** (a push-mirror in the vault's `.githooks`, or pulling the
+  Jetson from `fedora`) and is recorded as a **vault-side follow-up for Vít**,
+  not built in this personal-rag spec.
+- Rationale for pulling from the local bare repo rather than `fedora`: it exactly
+  matches the mechanism the reflog already shows, needs no new ssh/Tailscale
+  reachability assumption, and adds no `fedora` remote to the Jetson vault — the
+  smallest change from today's reality. The trade-off (a stale bare repo is
+  invisible to `--remote origin`) is accepted and handed to the vault side above.
+
 ### Facts this rests on
 - **[Observed, spec §0]** The Jetson vault working copy has **no git remote**;
   its reflog shows the last update was `pull --ff-only
