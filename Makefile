@@ -376,7 +376,6 @@ jetson-sync-install:
 		    git -C "$(JETSON_VAULT_DIR)" remote add $(JETSON_SYNC_REMOTE) "$(JETSON_BARE_REPO)")
 	mkdir -p "$(SYSTEMD_USER_DIR)"
 	cp deploy/jetson/rag-sync.service deploy/jetson/rag-sync.timer "$(SYSTEMD_USER_DIR)/"
-	chmod +x deploy/jetson/rag-sync.sh
 	systemctl --user daemon-reload
 	systemctl --user enable --now rag-sync.timer
 	systemctl --user list-timers rag-sync.timer --no-pager
