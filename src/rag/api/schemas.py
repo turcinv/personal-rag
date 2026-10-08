@@ -69,6 +69,11 @@ class QueryRequest(BaseModel):
         description="Cross-encoder rerank. Omit to use the profile's `rerank_default`; "
                     "true/false forces it for this call.",
     )
+    include_unreviewed: bool = Field(
+        False,
+        description="Disable the profile's default status exclusion "
+                    "(default_excluded_status, e.g. needs-review) for this call.",
+    )
     filters: Optional[QueryFilters] = None
 
 
@@ -103,6 +108,11 @@ class AnswerRequest(BaseModel):
     filters: Optional[QueryFilters] = None
     max_tokens: Optional[int] = Field(None, ge=1, le=4096)
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    include_unreviewed: bool = Field(
+        False,
+        description="Disable the profile's default status exclusion "
+                    "(default_excluded_status, e.g. needs-review) for this call.",
+    )
 
 
 class Citation(BaseModel):
@@ -115,6 +125,7 @@ class Citation(BaseModel):
     domain: Optional[str] = None
     distance: Optional[float] = None
     rerank_score: Optional[float] = None
+    unreviewed: Optional[bool] = None
 
 
 class AnswerResponse(BaseModel):

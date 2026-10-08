@@ -842,6 +842,31 @@ def test_answer_valid_returns_envelope_and_citations(
     assert body["usage"]["output_tokens"] == 5
 
 
+def test_answer_surfaces_unreviewed_marker_on_citations(
+    client, jwt_secret, patch_search, fake_state
+):
+    """With include_unreviewed=true, a record carrying the `unreviewed` marker
+    must surface it on its Citation (the /answer path previously dropped it)."""
+    rec_unreviewed = {
+        "document": "draft chunk",
+        "metadata": {"title": "Draft", "path": "d.md", "domain": "DevOps"},
+        "distance": 0.2,
+        "rank": 1,
+        "unreviewed": True,
+    }
+    recorder = patch_search([rec_unreviewed])
+    resp = client.post(
+        "/answer",
+        headers=_auth(_mint()),
+        json={"query": "q", "include_unreviewed": True},
+    )
+    assert resp.status_code == 200
+    assert recorder.last["include_unreviewed"] is True  # opt-in reached search()
+    citations = resp.json()["citations"]
+    assert len(citations) == 1
+    assert citations[0]["unreviewed"] is True
+
+
 def test_answer_forwards_search_and_generation_params(
     client, jwt_secret, patch_search, fake_state
 ):

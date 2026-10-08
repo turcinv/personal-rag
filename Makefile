@@ -1,4 +1,4 @@
-.PHONY: help install install-dev check lint typecheck test-coverage package-check config-doctor index build-lexical query eval stats pipeline-status sync-to-jetson test test-unit build build-jetson \
+.PHONY: help install install-dev check lint typecheck test-coverage package-check config-doctor index build-lexical query eval stats pipeline-status sync-to-jetson test test-unit build build-jetson drift \
         serve mcp mcp-docker pipeline docker-pipeline docker-serve jetson-serve \
         docker-index docker-query docker-test \
         jetson-pipeline-status jetson-full-pipeline \
@@ -9,7 +9,8 @@
         docker-extract docker-enrich docker-build-index docker-build-notes docker-build-books-index \
         docker-build-sqlite docker-build-vault-index docker-dup-detect docker-link-mocs \
         jetson-extract jetson-enrich jetson-build-index jetson-build-notes jetson-build-books-index \
-        jetson-build-sqlite jetson-build-vault-index jetson-dup-detect jetson-link-mocs
+        jetson-build-sqlite jetson-build-vault-index jetson-dup-detect jetson-link-mocs \
+        jetson-sync-install jetson-sync-uninstall
 
 PYTHON := .venv/bin/python
 Q      ?=
@@ -38,6 +39,7 @@ help:
 	@echo "  make pipeline-status      check all extraction pipeline outputs"
 	@echo "  make eval [ARGS=...]      recall@k / MRR eval over golden_queries.jsonl"
 	@echo "  make stats [ARGS=...]     index statistics (chunk counts, source breakdown)"
+	@echo "  make drift [ARGS=...]     report-only drift between vault source and index (exit 1 on drift)"
 	@echo "  make serve                run the HTTP API locally (rag-serve, port 8000)"
 	@echo "  make mcp                  run the local stdio MCP search server"
 	@echo "  make sync-to-jetson       transfer the active validated generation to Jetson (set JETSON_HOST)"
@@ -83,6 +85,8 @@ help:
 	@echo "  make jetson-stats [ARGS=...]    index statistics on Jetson"
 	@echo "  make jetson-serve               run the HTTP API container (port 8000)"
 	@echo "  make jetson-extract / jetson-enrich / jetson-build-index ..."
+	@echo "  make jetson-sync-install        install the vault-sync systemd user timer (on the Jetson)"
+	@echo "  make jetson-sync-uninstall      remove the vault-sync systemd user timer (leaves the remote)"
 	@echo ""
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
@@ -156,6 +160,12 @@ eval:
 
 stats:
 	.venv/bin/rag-stats $(ARGS)
+
+# Report-only drift between the vault source and the index (read-only; embeds
+# nothing, never mutates the index). Exits non-zero when any drift is found, so
+# a later cron / Jetson timer can alert on it.
+drift:
+	.venv/bin/rag-drift $(ARGS)
 
 # Quiesced backup / verified restore of the index + sidecars (holds the writer lock).
 #   make backup DEST=backups/2026-08-20
@@ -351,3 +361,29 @@ jetson-dup-detect:
 
 jetson-link-mocs:
 	docker compose -f docker-compose.jetson.yml run --rm rag rag-pipeline --stage link-mocs --no-deps $(ARGS)
+
+# ── Jetson vault-sync systemd user timer (run ON the Jetson) ─────────────────
+# Overridable: JETSON_VAULT_DIR, JETSON_BARE_REPO, JETSON_SYNC_REMOTE.
+JETSON_VAULT_DIR ?= $(HOME)/personal_knowledge/Career Knowledge Base
+JETSON_BARE_REPO ?= $(HOME)/git/career-knowledge-base.git
+JETSON_SYNC_REMOTE ?= origin
+SYSTEMD_USER_DIR := $(HOME)/.config/systemd/user
+
+jetson-sync-install:
+	@loginctl show-user "$(USER)" -p Linger 2>/dev/null | grep -q "Linger=yes" \
+		|| echo "WARNING: linger is OFF for $(USER); the user timer will not run without a login session. Enable with: sudo loginctl enable-linger $(USER)"
+	@git -C "$(JETSON_VAULT_DIR)" remote get-url $(JETSON_SYNC_REMOTE) >/dev/null 2>&1 \
+		&& echo "remote $(JETSON_SYNC_REMOTE) already present; leaving it" \
+		|| (echo "adding remote $(JETSON_SYNC_REMOTE) -> $(JETSON_BARE_REPO)"; \
+		    git -C "$(JETSON_VAULT_DIR)" remote add $(JETSON_SYNC_REMOTE) "$(JETSON_BARE_REPO)")
+	mkdir -p "$(SYSTEMD_USER_DIR)"
+	cp deploy/jetson/rag-sync.service deploy/jetson/rag-sync.timer "$(SYSTEMD_USER_DIR)/"
+	systemctl --user daemon-reload
+	systemctl --user enable --now rag-sync.timer
+	systemctl --user list-timers rag-sync.timer --no-pager
+
+jetson-sync-uninstall:
+	-systemctl --user disable --now rag-sync.timer
+	rm -f "$(SYSTEMD_USER_DIR)/rag-sync.service" "$(SYSTEMD_USER_DIR)/rag-sync.timer"
+	systemctl --user daemon-reload
+	@echo "units removed; remote $(JETSON_SYNC_REMOTE) left in place"

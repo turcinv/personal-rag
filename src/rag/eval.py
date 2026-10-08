@@ -55,6 +55,22 @@ def first_hit_rank(records, expected):
     return None
 
 
+def stale_trap_passed(records, expected, must_not):
+    """True iff a stale-trap query passes.
+
+    Passed means the first ``expected`` (current) note appears and no
+    ``must_not`` (superseded / needs-review) note ranks above it. A ``must_not``
+    note tying or outranking the first expected hit, or no expected hit at all,
+    fails."""
+    expected_rank = first_hit_rank(records, expected)
+    if expected_rank is None:
+        return False
+    must_not_rank = first_hit_rank(records, must_not) if must_not else None
+    if must_not_rank is not None and must_not_rank < expected_rank:
+        return False
+    return True
+
+
 def aggregate(rows):
     """Aggregate per-query rows into recall@5, recall@10 and MRR.
 
@@ -84,6 +100,7 @@ def evaluate(golden, *, n=10, config=None, collection_name=None,
                        collection_name or config.get("collection_name"))
 
     per_query = []
+    stale_trap = []
     for item in golden:
         q, expected, kind = item["query"], item["expected"], item.get("kind", "")
         filters = None  # golden queries are unfiltered by design
@@ -91,6 +108,17 @@ def evaluate(golden, *, n=10, config=None, collection_name=None,
             q, n, filters=filters, config=config, model=model,
             store=store, rerank=rerank, hybrid=hybrid,
         )
+        if kind == "stale-trap":
+            must_not = item.get("must_not", [])
+            stale_trap.append({
+                "query": q,
+                "expected": expected,
+                "must_not": must_not,
+                "expected_rank": first_hit_rank(records, expected),
+                "must_not_rank": first_hit_rank(records, must_not) if must_not else None,
+                "passed": stale_trap_passed(records, expected, must_not),
+            })
+            continue
         rank = first_hit_rank(records, expected)
         per_query.append({
             "query": q,
@@ -115,6 +143,11 @@ def evaluate(golden, *, n=10, config=None, collection_name=None,
         "hybrid": hybrid,
         "overall": aggregate(per_query),
         "by_kind": by_kind,
+        "stale_trap": {
+            "passed": sum(1 for r in stale_trap if r["passed"]),
+            "total": len(stale_trap),
+            "rows": stale_trap,
+        },
         "per_query": per_query,
     }
 
@@ -141,6 +174,15 @@ def print_report(result, label=None):
     for kind, a in result["by_kind"].items():
         print(f"  {kind:<8} (n={a['n']})   recall@5={a['recall@5']:.3f}  "
               f"recall@10={a['recall@10']:.3f}  MRR={a['mrr']:.3f}")
+    st = result.get("stale_trap")
+    if st and st["total"]:
+        print("-" * 78)
+        print(f"STALE-TRAP   {st['passed']}/{st['total']} passed")
+        for r in st["rows"]:
+            mark = "PASS" if r["passed"] else "FAIL"
+            q = r["query"] if len(r["query"]) <= 56 else r["query"][:55] + "…"
+            print(f"  [{mark}] {q:<54}"
+                  f"exp={r['expected_rank']} must_not={r['must_not_rank']}")
     print("=" * 78)
 
 

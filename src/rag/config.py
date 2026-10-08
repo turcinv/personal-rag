@@ -26,6 +26,7 @@ _TOP_LEVEL_KEYS = {
     "chunk_overlap_chars",
     "collection_name",
     "corpus_profile",
+    "default_excluded_status",
     "embedding_batch_size",
     "embedding_dimension",
     "embedding_model",
@@ -316,6 +317,12 @@ def _validate(cfg: Dict[str, Any]) -> None:
         ("hybrid_rrf_k", 60),
     ):
         _positive_int(cfg, key, default)
+
+    excluded_status = cfg.get("default_excluded_status", [])
+    if not isinstance(excluded_status, list) or any(
+        not isinstance(value, str) or not value.strip() for value in excluded_status
+    ):
+        raise ConfigError("default_excluded_status must be a list of non-empty strings")
 
     weights = cfg.get("hybrid_weights", [1.0, 1.0])
     if not isinstance(weights, (list, tuple)) or len(weights) != 2:

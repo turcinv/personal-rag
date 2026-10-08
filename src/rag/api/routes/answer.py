@@ -49,6 +49,7 @@ def _citations(records: list) -> list:
                 domain=meta.get("domain"),
                 distance=r.get("distance"),
                 rerank_score=r.get("rerank_score"),
+                unreviewed=r.get("unreviewed"),
             )
         )
     return out
@@ -90,6 +91,7 @@ def answer(
             model=state["model"],
             store=state["store"],
             rerank=rerank,
+            include_unreviewed=request.include_unreviewed,
         )
 
     reranked = rerank and any("rerank_score" in r for r in records)

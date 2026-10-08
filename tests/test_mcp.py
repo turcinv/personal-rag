@@ -107,12 +107,15 @@ async def test_advertises_only_minimal_search_tool(client):
 
     assert [tool.name for tool in listed.tools] == ["search"]
     schema = listed.tools[0].input_schema
-    assert set(schema["properties"]) == {"query", "n_results"}
+    # The surface stays tight: query + n_results + the approved needs-review
+    # opt-in (spec §2). No metadata filters or hybrid toggle are exposed.
+    assert set(schema["properties"]) == {"query", "n_results", "include_unreviewed"}
     assert schema["required"] == ["query"]
     assert schema["properties"]["query"]["minLength"] == 1
     assert schema["properties"]["n_results"]["minimum"] == 1
     assert schema["properties"]["n_results"]["maximum"] == 50
     assert schema["properties"]["n_results"]["default"] == 8
+    assert schema["properties"]["include_unreviewed"]["default"] is False
 
 
 @pytest.mark.anyio
@@ -141,6 +144,7 @@ async def test_search_forwards_state_defaults_and_full_records(client, fake_runt
         assert call["model"] is fake_runtime["model"]
         assert call["store"] is fake_runtime["store"]
         assert call["rerank"] is True
+        assert call["include_unreviewed"] is False
 
     # Both calls shared one lifespan initialization.
     assert fake_runtime["counters"] == {

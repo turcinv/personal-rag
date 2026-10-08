@@ -179,3 +179,77 @@ cd ~/personal-rag
 docker compose -f docker-compose.jetson.yml config | grep -A2 volumes   # mounts sane?
 make jetson-index
 ```
+
+---
+
+## Automated vault sync — systemd user timer (optional)
+
+Instead of running the manual steps above by hand, the Jetson can keep its vault
+and index fresh on a schedule with a systemd **user** timer (no root). It does,
+each run, in order:
+
+1. pre-flight: abort if the vault working tree is dirty (never stash/reset);
+2. `git pull --ff-only origin main` on the vault (never merge/force);
+3. reindex **only if HEAD moved** (`rag.indexer --wait-for-lock 600`, so it waits
+   for a concurrent manual `make jetson-index` rather than failing);
+4. `rag-drift --skip-git --remote origin` **in the container** (index-vs-source
+   sub-check only — the container has no git and a read-only vault), plus a
+   **host-side** git-upstream check (`behind origin/main` or a dirty tree ⇒
+   drift); the script exits with the drift code so a stale run is visible in both
+   the journal and `systemctl --user --failed`.
+
+### The `origin` remote (one-time)
+
+The Jetson vault fast-forwards from a **local bare repo** at
+`~/git/career-knowledge-base.git`. The install target adds a remote `origin`
+pointing at it **only if `origin` is missing** — it never rewrites an existing
+one:
+
+```bash
+git -C ~/personal_knowledge/Career\ Knowledge\ Base remote get-url origin \
+  || git -C ~/personal_knowledge/Career\ Knowledge\ Base remote add origin ~/git/career-knowledge-base.git
+```
+
+Freshness of the bare repo itself is **out of scope** for this timer: if the
+macOS workstation forgot to `git push jetson main`, the bare repo lags and
+`rag-drift --remote origin` reads "in sync" against a stale upstream. Closing
+that gap is a **vault-side follow-up** (a push-mirror hook in the vault repo, or
+pulling the Jetson from `fedora`), not part of this timer.
+
+### Install / uninstall (run ON the Jetson)
+
+The units ship on this branch, so get them onto the Jetson first, then install:
+
+```bash
+# macOS: merge the feature branch and push to the Jetson code remote
+# jetson:
+cd ~/personal-rag
+git pull                      # pull the deploy/ units + Makefile targets
+make build-jetson             # rebuild the image if code/deps changed
+make jetson-sync-install      # adds origin if missing, installs units, daemon-reload, enable --now
+make jetson-sync-uninstall    # disable --now + remove units; leaves the origin remote in place
+```
+
+### Linger — the timer needs it to run without a login session
+
+A systemd **user** timer only fires while the user has a session, *unless*
+**linger** is enabled for that user. `jetson-sync-install` prints a WARNING if
+linger is off but does **not** enable it (enabling it is a root action). Turn it
+on once so the timer runs on boot without anyone logging in:
+
+```bash
+sudo loginctl enable-linger turcinv
+loginctl show-user turcinv -p Linger    # expect Linger=yes
+```
+
+The units live in the repo at `deploy/jetson/rag-sync.{sh,service,timer}`;
+install copies the `.service`/`.timer` into `~/.config/systemd/user/`. The timer
+is `OnCalendar=06,12,18:00` with `Persistent=true` (a missed run catches up).
+The units reference **no `.env`** — the indexer reads its own env/config on the
+host exactly as a manual `make jetson-index` does.
+
+```bash
+systemctl --user list-timers rag-sync.timer --no-pager   # when it next fires
+journalctl --user -u rag-sync.service -n 50 --no-pager    # last run's output + drift exit code
+systemctl --user start rag-sync.service                   # run once now
+```

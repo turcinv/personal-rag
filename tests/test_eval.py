@@ -6,7 +6,10 @@ against a populated index via `make eval`."""
 
 import math
 
-from rag.eval import is_hit, first_hit_rank, aggregate, load_golden, DEFAULT_GOLDEN
+from rag.eval import (
+    is_hit, first_hit_rank, aggregate, load_golden, DEFAULT_GOLDEN,
+    stale_trap_passed, evaluate,
+)
 
 
 def _rec(title="", path=""):
@@ -69,6 +72,119 @@ def test_golden_set_wellformed():
     for item in golden:
         assert item["query"].strip(), "empty query"
         assert isinstance(item["expected"], list) and item["expected"], "expected must be a non-empty list"
-        assert item["kind"] in {"vault", "resource"}, f"bad kind: {item.get('kind')}"
+        assert item["kind"] in {"vault", "resource", "stale-trap"}, f"bad kind: {item.get('kind')}"
+        if item["kind"] == "stale-trap":
+            assert isinstance(item.get("must_not", []), list), "must_not must be a list"
         kinds.add(item["kind"])
-    assert kinds == {"vault", "resource"}, "golden set must cover both corpora"
+    assert {"vault", "resource"} <= kinds, "golden set must cover both main corpora"
+
+
+# ── stale-trap scoring (spec §3) ─────────────────────────────────────────────
+
+class _EvalFakeStore:
+    """Returns the configured titles in order as search records, ignoring the
+    embedding. `search()` with rerank=False preserves this order and trims."""
+
+    def __init__(self, titles):
+        self.titles = titles
+
+    def read_index_state(self):
+        return None
+
+    def count(self):
+        return len(self.titles)
+
+    def query(self, embedding, k, where=None, *, text=None, hybrid=False):
+        return [
+            {"document": t, "metadata": {"title": t, "path": t}, "distance": 0.1 * i}
+            for i, t in enumerate(self.titles[:k])
+        ]
+
+
+def _eval_fake_model():
+    class M:
+        def encode(self, texts, **kw):
+            import numpy as np
+            return np.zeros((1, 8), dtype="float32")
+    return M()
+
+
+def _run_eval(monkeypatch, golden, titles):
+    import rag.eval as e
+    store = _EvalFakeStore(titles)
+    monkeypatch.setattr(e, "get_model", lambda name: _eval_fake_model())
+    monkeypatch.setattr(e, "open_store", lambda *a, **k: store)
+    return evaluate(golden, n=10, config={"embedding_model": "x"})
+
+
+def test_stale_trap_passed_pure_logic():
+    def rec(t):
+        return {"document": t, "metadata": {"title": t, "path": t}, "distance": 0.0}
+
+    # current note first, superseded note below → passed
+    recs = [rec("Current SOP"), rec("Old SOP")]
+    assert stale_trap_passed(recs, ["Current SOP"], ["Old SOP"]) is True
+    # superseded note above the current note → failed
+    recs = [rec("Old SOP"), rec("Current SOP")]
+    assert stale_trap_passed(recs, ["Current SOP"], ["Old SOP"]) is False
+    # no expected hit at all → failed
+    recs = [rec("Unrelated")]
+    assert stale_trap_passed(recs, ["Current SOP"], ["Old SOP"]) is False
+    # empty must_not → passes as soon as expected is found
+    recs = [rec("Current SOP")]
+    assert stale_trap_passed(recs, ["Current SOP"], []) is True
+
+
+def test_stale_trap_pass_case(monkeypatch):
+    golden = [{
+        "query": "which SOP applies",
+        "expected": ["Current SOP"],
+        "must_not": ["Old SOP"],
+        "kind": "stale-trap",
+    }]
+    result = _run_eval(monkeypatch, golden, ["Current SOP", "Old SOP"])
+    st = result["stale_trap"]
+    assert st["total"] == 1 and st["passed"] == 1
+    assert st["rows"][0]["passed"] is True
+    # stale-trap rows never enter the main recall/MRR numbers
+    assert result["overall"]["n"] == 0
+    assert "stale-trap" not in result["by_kind"]
+
+
+def test_stale_trap_inverted_ranking_fails_and_has_teeth(monkeypatch):
+    """Inverted ranking (superseded note above the current one) FAILS, and the
+    must_not check is what makes it fail: the expected note IS present (so a
+    scorer that ignored must_not would wrongly pass)."""
+    golden = [{
+        "query": "which SOP applies",
+        "expected": ["Current SOP"],
+        "must_not": ["Old SOP"],
+        "kind": "stale-trap",
+    }]
+    result = _run_eval(monkeypatch, golden, ["Old SOP", "Current SOP"])
+    row = result["stale_trap"]["rows"][0]
+    assert row["passed"] is False
+    assert result["stale_trap"]["passed"] == 0
+    # Teeth: without the must_not check, this would pass — the expected note is
+    # found (rank 2). The must_not note outranking it (rank 1) is the only reason
+    # it fails. first_hit_rank(expected) is not None proves the "expected found"
+    # half alone would greenlight it.
+    assert row["expected_rank"] == 2 and row["must_not_rank"] == 1
+    assert row["expected_rank"] is not None  # a must_not-blind scorer would pass
+
+
+def test_main_metrics_unchanged_with_stale_trap_present(monkeypatch):
+    """A stale-trap row alongside a normal vault row must not perturb the main
+    recall/MRR aggregation — the vault row scores exactly as it would alone."""
+    golden_with_trap = [
+        {"query": "vault q", "expected": ["Vault Note"], "kind": "vault"},
+        {"query": "trap q", "expected": ["Current SOP"],
+         "must_not": ["Old SOP"], "kind": "stale-trap"},
+    ]
+    golden_without = [golden_with_trap[0]]
+    titles = ["Vault Note", "Current SOP", "Old SOP"]
+    with_trap = _run_eval(monkeypatch, golden_with_trap, titles)
+    without = _run_eval(monkeypatch, golden_without, titles)
+    assert with_trap["overall"] == without["overall"]
+    assert with_trap["by_kind"] == without["by_kind"]
+    assert with_trap["stale_trap"]["total"] == 1
