@@ -370,6 +370,8 @@ JETSON_SYNC_REMOTE ?= origin
 SYSTEMD_USER_DIR := $(HOME)/.config/systemd/user
 
 jetson-sync-install:
+	@loginctl show-user "$(USER)" -p Linger 2>/dev/null | grep -q "Linger=yes" \
+		|| echo "WARNING: linger is OFF for $(USER); the user timer will not run without a login session. Enable with: sudo loginctl enable-linger $(USER)"
 	@git -C "$(JETSON_VAULT_DIR)" remote get-url $(JETSON_SYNC_REMOTE) >/dev/null 2>&1 \
 		&& echo "remote $(JETSON_SYNC_REMOTE) already present; leaving it" \
 		|| (echo "adding remote $(JETSON_SYNC_REMOTE) -> $(JETSON_BARE_REPO)"; \

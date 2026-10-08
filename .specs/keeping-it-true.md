@@ -132,6 +132,12 @@ without a human remembering the SOP. Plan only — nothing here is installed.
   exit 2) ⇒ exit 2; drift wins over could-not-verify. Pull/dirty-pre-flight/index
   failures stay exit 1. A non-zero exit makes a stale run visible in
   `systemctl --user --failed`, not just buried in the journal.
+- **Linger:** `jetson-sync-install` **warns** (does not enable) if
+  `loginctl show-user turcinv -p Linger` is not `Linger=yes` — a user timer does
+  not run without a login session unless linger is on
+  (`sudo loginctl enable-linger turcinv`, a root action, documented in the SOP).
+  Install order: merge + push on macOS, then on the Jetson `git pull`,
+  `make build-jetson`, `make jetson-sync-install`.
 - **Bare-repo staleness is out of scope here.** If macOS forgot to
   `git push jetson main`, the bare repo itself lags and `rag-drift --remote
   origin` will read "in sync" against a stale upstream. Closing that gap belongs

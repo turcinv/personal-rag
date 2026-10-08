@@ -218,10 +218,28 @@ pulling the Jetson from `fedora`), not part of this timer.
 
 ### Install / uninstall (run ON the Jetson)
 
+The units ship on this branch, so get them onto the Jetson first, then install:
+
 ```bash
+# macOS: merge the feature branch and push to the Jetson code remote
+# jetson:
 cd ~/personal-rag
-make jetson-sync-install     # adds origin if missing, installs units, daemon-reload, enable --now
-make jetson-sync-uninstall   # disable --now + remove units; leaves the origin remote in place
+git pull                      # pull the deploy/ units + Makefile targets
+make build-jetson             # rebuild the image if code/deps changed
+make jetson-sync-install      # adds origin if missing, installs units, daemon-reload, enable --now
+make jetson-sync-uninstall    # disable --now + remove units; leaves the origin remote in place
+```
+
+### Linger — the timer needs it to run without a login session
+
+A systemd **user** timer only fires while the user has a session, *unless*
+**linger** is enabled for that user. `jetson-sync-install` prints a WARNING if
+linger is off but does **not** enable it (enabling it is a root action). Turn it
+on once so the timer runs on boot without anyone logging in:
+
+```bash
+sudo loginctl enable-linger turcinv
+loginctl show-user turcinv -p Linger    # expect Linger=yes
 ```
 
 The units live in the repo at `deploy/jetson/rag-sync.{sh,service,timer}`;
