@@ -114,7 +114,11 @@ def _run_eval(monkeypatch, golden, titles):
     store = _EvalFakeStore(titles)
     monkeypatch.setattr(e, "get_model", lambda name: _eval_fake_model())
     monkeypatch.setattr(e, "open_store", lambda *a, **k: store)
-    return evaluate(golden, n=10, config={"embedding_model": "x"})
+    # Isolate the golden-JSONL stale-trap path from the synthetic fixture
+    # harness (tested separately in tests/test_eval_fixtures.py); the harness
+    # needs the real model and its own store, not this fake one.
+    return evaluate(golden, n=10, config={"embedding_model": "x"},
+                    include_stale_trap_fixtures=False)
 
 
 def test_stale_trap_passed_pure_logic():

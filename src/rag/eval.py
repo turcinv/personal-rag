@@ -87,8 +87,15 @@ def aggregate(rows):
 
 
 def evaluate(golden, *, n=10, config=None, collection_name=None,
-             rerank=False, hybrid=False):
-    """Run every golden query and return an aggregate + per-query result dict."""
+             rerank=False, hybrid=False, include_stale_trap_fixtures=True):
+    """Run every golden query and return an aggregate + per-query result dict.
+
+    When ``include_stale_trap_fixtures`` is True (default), synthetic stale-trap
+    fixture rows are built and scored in an isolated temp store (see
+    ``rag.eval_fixtures`` / ``.specs/stale-trap-fixtures.md``) and merged into
+    the ``stale_trap`` block. The production vault/index is never touched.
+    ``stale_trap["baseline_rows"]`` holds documented expected-fail rows (T2)
+    excluded from the pass count by design (§4.5)."""
     if config is None:
         config = load_config()
     model_name = config.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
@@ -133,6 +140,17 @@ def evaluate(golden, *, n=10, config=None, collection_name=None,
     for kind in sorted({r["kind"] for r in per_query}):
         by_kind[kind] = aggregate([r for r in per_query if r["kind"] == kind])
 
+    # Synthetic stale-trap fixture rows, scored in an isolated temp store that
+    # never touches the production vault/index. Merged into the stale_trap block
+    # alongside any kind=="stale-trap" golden JSONL rows (none today). Baseline
+    # rows (T2) are reported separately and excluded from the pass count (§4.5).
+    baseline_rows = []
+    if include_stale_trap_fixtures:
+        from .eval_fixtures import run_stale_trap
+        fixture = run_stale_trap(config, model, n=n, rerank=rerank, hybrid=hybrid)
+        stale_trap.extend(fixture["rows"])
+        baseline_rows = fixture["baseline_rows"]
+
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "model": model_name,
@@ -147,6 +165,7 @@ def evaluate(golden, *, n=10, config=None, collection_name=None,
             "passed": sum(1 for r in stale_trap if r["passed"]),
             "total": len(stale_trap),
             "rows": stale_trap,
+            "baseline_rows": baseline_rows,
         },
         "per_query": per_query,
     }
@@ -175,14 +194,31 @@ def print_report(result, label=None):
         print(f"  {kind:<8} (n={a['n']})   recall@5={a['recall@5']:.3f}  "
               f"recall@10={a['recall@10']:.3f}  MRR={a['mrr']:.3f}")
     st = result.get("stale_trap")
-    if st and st["total"]:
+    if st and (st["total"] or st.get("baseline_rows")):
         print("-" * 78)
         print(f"STALE-TRAP   {st['passed']}/{st['total']} passed")
+        # Fixture rows carry a per-row "hybrid" note when hybrid scoring was
+        # requested but skipped (the fixture store has no lexical index). Surface
+        # it once rather than per row — it is uniform across fixture rows.
+        all_rows = (st["rows"] or []) + (st.get("baseline_rows") or [])
+        hybrid_note = next((r["hybrid"] for r in all_rows if r.get("hybrid")), None)
+        if hybrid_note:
+            print(f"  hybrid: {hybrid_note}")
         for r in st["rows"]:
             mark = "PASS" if r["passed"] else "FAIL"
             q = r["query"] if len(r["query"]) <= 56 else r["query"][:55] + "…"
             print(f"  [{mark}] {q:<54}"
                   f"exp={r['expected_rank']} must_not={r['must_not_rank']}")
+        baseline_rows = st.get("baseline_rows") or []
+        if baseline_rows:
+            print("BASELINE (expected fail, not counted)")
+            for r in baseline_rows:
+                mark = "PASS" if r["passed"] else "FAIL"
+                q = r["query"] if len(r["query"]) <= 56 else r["query"][:55] + "…"
+                print(f"  [{mark}] {q:<54}"
+                      f"exp={r['expected_rank']} must_not={r['must_not_rank']}")
+            if any(r["passed"] for r in baseline_rows):
+                print("  ⚠ baseline now passing — see .specs/stale-trap-fixtures.md §4.5")
     print("=" * 78)
 
 
@@ -206,6 +242,10 @@ def main():
     parser.add_argument("--hybrid", dest="hybrid", action="store_true",
                         help="Enable BM25+dense hybrid fusion (Phase 3d)")
     parser.set_defaults(hybrid=False)
+    parser.add_argument("--no-stale-trap-fixtures", dest="stale_trap_fixtures",
+                        action="store_false", default=True,
+                        help="Skip the synthetic stale-trap fixture rows "
+                             "(faster; real golden-set numbers only)")
     args = parser.parse_args()
 
     config = load_config()
@@ -220,7 +260,8 @@ def main():
 
     golden = load_golden(args.golden)
     result = evaluate(golden, n=args.n, config=config, collection_name=args.collection,
-                      rerank=rerank, hybrid=args.hybrid)
+                      rerank=rerank, hybrid=args.hybrid,
+                      include_stale_trap_fixtures=args.stale_trap_fixtures)
     if args.label:
         result["label"] = args.label
     print_report(result, label=args.label)
