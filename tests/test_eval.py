@@ -7,9 +7,38 @@ against a populated index via `make eval`."""
 import math
 
 from rag.eval import (
-    is_hit, first_hit_rank, aggregate, load_golden, DEFAULT_GOLDEN,
+    is_hit, first_hit_rank, aggregate, load_golden, DEFAULT_GOLDEN, default_golden,
     stale_trap_passed, evaluate,
 )
+
+
+def _make_golden(root):
+    path = root / "tests" / "eval" / "golden_queries.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text("{}\n", encoding="utf-8")
+    return path
+
+
+def test_default_golden_prefers_the_checkout(tmp_path, monkeypatch):
+    checkout, elsewhere = tmp_path / "checkout", tmp_path / "elsewhere"
+    expected = _make_golden(checkout)
+    _make_golden(elsewhere)
+    monkeypatch.chdir(elsewhere)
+    assert default_golden(checkout) == expected
+
+
+def test_default_golden_falls_back_to_cwd_when_installed(tmp_path, monkeypatch):
+    # pip-installed package: no checkout above rag/, the image runs in /app
+    site_packages, app = tmp_path / "site-packages", tmp_path / "app"
+    site_packages.mkdir()
+    expected = _make_golden(app)
+    monkeypatch.chdir(app)
+    assert default_golden(site_packages) == expected.resolve()
+
+
+def test_default_golden_points_at_cwd_when_nothing_exists(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert default_golden(tmp_path / "nowhere") == tmp_path.resolve() / "tests" / "eval" / "golden_queries.jsonl"
 
 
 def _rec(title="", path=""):

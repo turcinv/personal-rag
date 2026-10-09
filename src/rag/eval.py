@@ -21,7 +21,21 @@ from .query import build_where, get_model, open_store, rerank_default, search
 
 logger = logging.getLogger("rag")
 
-DEFAULT_GOLDEN = Path(__file__).resolve().parents[2] / "tests" / "eval" / "golden_queries.jsonl"
+_GOLDEN_REL = Path("tests") / "eval" / "golden_queries.jsonl"
+
+
+def default_golden(checkout_root=None):
+    """Golden set of a source checkout, else ``./tests/eval`` of the working directory.
+
+    A pip-installed package (the Docker image, WORKDIR /app) has no checkout two
+    levels above ``rag/``, so the checkout-relative path would point into site-packages.
+    """
+    root = Path(__file__).resolve().parents[2] if checkout_root is None else Path(checkout_root)
+    candidate = root / _GOLDEN_REL
+    return candidate if candidate.is_file() else Path.cwd() / _GOLDEN_REL
+
+
+DEFAULT_GOLDEN = default_golden()
 
 
 def _norm(s):
